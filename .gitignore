@@ -1,0 +1,22 @@
+# deps
+node_modules/
+.pnpm-store/
+
+# build outputs
+dist/
+**/dist/
+*.tsbuildinfo
+
+# expo / RN
+.expo/
+apps/mobile/.expo/
+apps/mobile/web-build/
+
+# turbo
+.turbo/
+
+# env
+.env
+
+# logs
+*.log
