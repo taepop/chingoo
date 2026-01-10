@@ -405,3 +405,6 @@ The system MUST execute the following in a single DB transaction:
 This transition MUST use a **Prisma Interactive Transaction** (`prisma.$transaction`). 
 - **Code Requirement:** The insertion of the first message and the update of User Status to 'ACTIVE' must happen within the same closure. 
 - **Failure Condition:** If the message insert succeeds but the user update fails (or vice versa), the database must roll back to pre-insert state. Orphaned messages in ONBOARDING state are not allowed.
+
+[MINIMAL DEVIATION] Qdrant healthcheck removed
+MONOREPO_SETUP compose uses curl for Qdrant healthcheck, but the official qdrant/qdrant:v1.9.0 image does not include curl/wget/nc, causing the healthcheck to fail. We removed the healthcheck. Verify Qdrant with host request to http://localhost:6333/healthz (or /health if applicable).

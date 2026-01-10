@@ -39,11 +39,8 @@ services:
       - "6334:6334"
     volumes:
       - qdrant_data:/qdrant/storage
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:6333/health"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
+    # Note: Healthcheck removed - Qdrant image doesn't include curl/wget/nc for security.
+    # Service is verified working via HTTP endpoint: http://localhost:6333/healthz
 
 volumes:
   postgres_data:
