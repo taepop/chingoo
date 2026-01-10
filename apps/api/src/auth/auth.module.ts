@@ -1,12 +1,22 @@
 import { Module } from '@nestjs/common';
+import { JwtModule } from '@nestjs/jwt';
+import { PassportModule } from '@nestjs/passport';
 import { AuthController } from './auth.controller';
+import { AuthService } from './auth.service';
+import { JwtStrategy } from './jwt.strategy';
+import { PrismaModule } from '../prisma/prisma.module';
 
-/**
- * Auth Module
- * Endpoint: POST /auth/login (or Signup)
- * Per SPEC_PATCH.md: /auth/signup is NOT implemented as a separate endpoint in v0.1.
- */
 @Module({
+  imports: [
+    PrismaModule,
+    PassportModule.register({ defaultStrategy: 'jwt' }),
+    JwtModule.register({
+      // JWT module is used for token generation, not validation
+      // Validation is done via passport-jwt strategy
+    }),
+  ],
   controllers: [AuthController],
+  providers: [AuthService, JwtStrategy],
+  exports: [AuthService, JwtStrategy],
 })
 export class AuthModule {}

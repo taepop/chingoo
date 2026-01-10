@@ -1,0 +1,45 @@
+// Shared Enums (packages/shared/src/enums.ts)
+// Per API_CONTRACT.md §1
+
+export enum UserState {
+  CREATED = "CREATED",
+  ONBOARDING = "ONBOARDING",
+  ACTIVE = "ACTIVE"
+}
+
+export enum AgeBand {
+  AGE_13_17 = "13-17",
+  AGE_18_24 = "18-24",
+  AGE_25_34 = "25-34",
+  AGE_35_44 = "35-44",
+  AGE_45_PLUS = "45+"
+}
+
+export enum OccupationCategory {
+  STUDENT = "student",
+  WORKING = "working",
+  BETWEEN_JOBS = "between_jobs",
+  OTHER = "other"
+}
+
+export enum TopicId {
+  POLITICS = "POLITICS",
+  RELIGION = "RELIGION",
+  SEXUAL_CONTENT = "SEXUAL_CONTENT",
+  SEXUAL_JOKES = "SEXUAL_JOKES",
+  MENTAL_HEALTH = "MENTAL_HEALTH",
+  SELF_HARM = "SELF_HARM",
+  SUBSTANCES = "SUBSTANCES",
+  GAMBLING = "GAMBLING",
+  VIOLENCE = "VIOLENCE",
+  ILLEGAL_ACTIVITY = "ILLEGAL_ACTIVITY",
+  HATE_HARASSMENT = "HATE_HARASSMENT",
+  MEDICAL_HEALTH = "MEDICAL_HEALTH",
+  PERSONAL_FINANCE = "PERSONAL_FINANCE",
+  RELATIONSHIPS = "RELATIONSHIPS",
+  FAMILY = "FAMILY",
+  WORK_SCHOOL = "WORK_SCHOOL",
+  TRAVEL = "TRAVEL",
+  ENTERTAINMENT = "ENTERTAINMENT",
+  TECH_GAMING = "TECH_GAMING"
+}
