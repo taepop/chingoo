@@ -1,7 +1,8 @@
 "use strict";
-// Export Enums
+// Placeholder exports - DTOs and enums will be added later
+// Export Enums (placeholder)
 // export * from './enums';
-// Export DTOs
+// Export DTOs (placeholder)
 // export * from './dto/onboarding.dto';
 // export * from './dto/chat.dto';
 // export * from './dto/auth.dto';
