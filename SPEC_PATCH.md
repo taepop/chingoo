@@ -9,7 +9,7 @@ Add the following field to the `users` table or create a `user_devices` table. F
 
 **Update `users` table in SCHEMA.md (B.1):**
 | Column | Type | Nullable | Default | Notes |
-| push_token | VARCHAR(256) | NULL | - | Expo Push Token for Retention |
+| push_token | VARCHAR(256) | NULL | - | Push Token for Retention |
 
 **Update Prisma Model (User):**
 model User {
@@ -28,7 +28,7 @@ Add endpoint to register the push token.
 **Interface:**
 ```typescript
 export interface RegisterDeviceDto {
-  push_token: string; // Expo push token
+  push_token: string; // Push notification token
   platform: 'ios' | 'android';
 }
 

@@ -4,6 +4,23 @@
 > You MUST adhere to these exact versions to prevent dependency drift and ecosystem incompatibility.
 > Stability is prioritized over novelty. Do not upgrade to "latest" if it violates the major version constraints below.
 
+## 0. Pre-Flight Checklist (Before Writing Code)
+
+**Local Prerequisites (versions are binding):**
+
+- **Node.js** `v20.x` (LTS "Iron") — See §1
+- **pnpm** `v9.x` (mandatory; no npm/yarn) — See §1
+- **Turbo** `^1.12.0`, **TypeScript** `^5.3.0` (root dev dependencies)
+- **Backend:** NestJS v10.x + Fastify platform (no Express) — See §2
+- **ORM:** Prisma v5.x (client must match CLI) — See §2
+- **Mobile:** Expo SDK 54, RN 0.81.x, expo-router (for Expo Go compatibility)
+- **Docker images ready:**
+  - Postgres: `postgres:16-alpine`
+  - Redis: `redis:7-alpine`
+  - Qdrant: `qdrant/qdrant:v1.9.x`
+
+> **Note:** Mobile stack versions are provided as reference for Expo Go compatibility. The setup should prioritize functional initialization over strict version enforcement.
+
 ## 1. Runtime Environment
 | Component | Version Constraint | Notes |
 |-----------|--------------------|-------|
@@ -23,12 +40,13 @@
 ## 3. Mobile Stack (`apps/mobile`)
 | Library | Version Constraint | Context |
 |---------|--------------------|---------|
-| **Expo SDK** | `SDK 54` | **Required by Client Environment.** |
-| **Expo SDK** | `SDK 55` | **Required by Client Environment.** |
-| **React Native** | `Latest supported by SDK 54` | Let `npx create-expo-app` determine the exact RN version (likely 0.77+). |
-| **Router** | `expo-router@latest` | Must match SDK 54 compatibility. |
+| **Expo SDK** | `54` | For Expo Go compatibility (iOS/Android). |
+| **React Native** | `0.81.x` | Matched to Expo SDK 54. |
+| **Router** | `expo-router` (latest compatible) | Must match Expo SDK 54 compatibility. |
 | **Storage** | `react-native-mmkv` | High-performance storage replacement for AsyncStorage. |
 | **Styling** | `tamagui` OR `nativewind` | Preference: Typesafe styling. |
+
+> **Expo Go Compatibility:** These versions are recommended for Expo Go testing. The app initialization should prioritize working with Expo Go on iOS devices. Version constraints should not prevent functional setup.
 
 ## 4. Infrastructure Services (Docker)
 | Service | Image Tag | Notes |

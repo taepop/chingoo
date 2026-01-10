@@ -1,7 +1,7 @@
 # AI_PIPELINE.md — Chingoo (v0.1 Final, Behavior-Locked)
 
 > Locked Stack (v0.1)
-> - Mobile: React Native + Expo (TypeScript)
+> - Mobile: React Native (TypeScript)
 > - API: NestJS 10 (Stable) + Fastify (Node 20 LTS)
 > - Auth: AWS Cognito (JWT)
 > - DB: Postgres (source of truth) + Prisma

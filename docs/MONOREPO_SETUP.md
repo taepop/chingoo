@@ -5,6 +5,9 @@ CRITICAL INSTRUCTION FOR AI AGENTS: This document defines the physical structure
 
 The project must strictly follow this tree.
 
+**Target tree (must match):**
+
+```
 chingoo/
 ├── package.json          # Root configuration (scripts, devDependencies)
 ├── pnpm-workspace.yaml   # Defines workspace members
@@ -15,11 +18,15 @@ chingoo/
 │   │   ├── src/
 │   │   ├── package.json  # Depends on "@chingoo/shared"
 │   │   └── tsconfig.json
-│   └── mobile/           # Expo SDK 54 (Frontend) # Expo SDK 55 (Frontend)
+│   ├── mobile/           # React Native (Frontend)
+│   │   ├── src/
+│   │   ├── app.json
+│   │   ├── metro.config.js # CRITICAL: Configured to watch packages/shared
+│   │   ├── package.json    # Depends on "@chingoo/shared"
+│   │   └── tsconfig.json
+│   └── workers/          # REQUIRED (BullMQ processors)
 │       ├── src/
-│       ├── app.json
-│       ├── metro.config.js # CRITICAL: Configured to watch packages/shared
-│       ├── package.json    # Depends on "@chingoo/shared"
+│       ├── package.json  # Depends on "@chingoo/shared"
 │       └── tsconfig.json
 └── packages/
     └── shared/           # The "Glue" Package
@@ -32,30 +39,30 @@ chingoo/
         │   └── types/
         ├── package.json
         └── tsconfig.json
+```
 
 
 2. Initialization Script (Bash)
 Use this script to scaffold the folders and initialize the monorepo logic.
 
-# 1. Create Root Directory
+**Run exactly (baseline scaffold):**
+
+```bash
 mkdir chingoo && cd chingoo
 pnpm init
-
-# 2. Install Turbo and Root Deps
 pnpm add turbo typescript -D -w
-
-# 3. Create Folder Structure
-mkdir -p apps/api apps/mobile
+mkdir -p apps/api apps/mobile apps/workers
 mkdir -p packages/shared/src/dto packages/shared/src/enums packages/shared/prisma
-
-# 4. Create Workspace Config
 touch pnpm-workspace.yaml turbo.json tsconfig.base.json
-
-# 5. Initialize Shared Package
 cd packages/shared
 pnpm init
-# (Manually edit package.json name to "@chingoo/shared" later)
 cd ../..
+```
+
+**Note:** After running the above:
+1. Manually edit `packages/shared/package.json` to set `"name": "@chingoo/shared"`.
+2. Create root `.env.example` file with the environment variables template (see section 4.4 below).
+3. Create root `docker-compose.yml` file for local development services (see section 3.D below).
 
 3. Configuration Snippets
 A. Root pnpm-workspace.yaml
@@ -101,6 +108,101 @@ Ensures all apps use strict typing.
     "forceConsistentCasingInFileNames": true
   }
 }
+
+C.1 Root turbo.json
+Turborepo build pipeline configuration. Ensures `pnpm -w build` runs `tsc` in packages/shared.
+
+{
+  "$schema": "https://turbo.build/schema.json",
+  "pipeline": {
+    "build": {
+      "dependsOn": ["^build"],
+      "outputs": ["dist/**", ".next/**", "!.next/cache/**"]
+    },
+    "dev": {
+      "cache": false,
+      "persistent": true
+    },
+    "lint": {
+      "outputs": []
+    },
+    "db:generate": {
+      "cache": false,
+      "outputs": ["node_modules/.prisma/**"]
+    },
+    "db:push": {
+      "cache": false
+    }
+  }
+}
+
+**Verification:** After scaffolding, run `pnpm -w build` to verify turbo runs `tsc` in packages/shared. The build should succeed if packages/shared has a valid `build: "tsc"` script and tsconfig.json.
+
+D. Root docker-compose.yml
+
+Docker services for local development (Postgres, Redis, Qdrant):
+
+```yaml
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: chingoo-postgres
+    environment:
+      POSTGRES_USER: chingoo
+      POSTGRES_PASSWORD: chingoo
+      POSTGRES_DB: chingoo
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U chingoo"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: chingoo-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  qdrant:
+    image: qdrant/qdrant:v1.9.0
+    container_name: chingoo-qdrant
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant_data:/qdrant/storage
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:6333/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  postgres_data:
+  redis_data:
+  qdrant_data:
+```
+
+**Usage:** 
+```bash
+docker compose up -d
+docker ps
+```
+
+Run `docker compose up -d` at root to start all services in detached mode. Use `docker ps` to verify all containers are running. Services match the `.env.example` default connection strings.
 
 4. The "Shared" Package Strategy (packages/shared)
 This is the most critical component. It prevents code duplication and "hallucination" by ensuring the Backend and Frontend use the exact same Types.
@@ -156,6 +258,50 @@ export * from './dto/auth.dto';
 // Re-export Prisma types (optional, if needed directly in frontend types)
 // export * from '@prisma/client';
 
+4.4 Root .env.example
+
+Environment variables required (no secrets in example):
+
+```env
+# ---- Core ----
+NODE_ENV=development
+
+# ---- Postgres (Prisma reads DATABASE_URL) ----
+DATABASE_URL=postgresql://chingoo:chingoo@localhost:5432/chingoo?schema=public
+
+# ---- Redis (BullMQ) ----
+REDIS_URL=redis://localhost:6379
+
+# ---- Qdrant ----
+QDRANT_URL=http://localhost:6333
+QDRANT_COLLECTION=memories
+
+# ---- Auth (AWS Cognito JWT) ----
+COGNITO_USER_POOL_ID=
+COGNITO_REGION=
+COGNITO_JWKS_URL=
+
+# ---- Dev Auth Bypass (DEV ONLY - only if Cognito not ready yet) ----
+# MINIMAL DEVIATION: Allows dev auth bypass when Cognito JWKS validation not available.
+# Does not change PRODUCT intent (still token-based auth). Set to false in production.
+DEV_BYPASS_AUTH=false
+DEV_USER_SUB=dev-sub-0001
+
+# ---- LLM / Embeddings ----
+LLM_PROVIDER=openai
+LLM_API_KEY=
+EMBEDDING_MODEL_DIM=1536
+
+# ---- Retention (quiet hours enforced in logic; timezone comes from onboarding) ----
+RETENTION_MIN_LOCAL_HOUR=10
+RETENTION_MAX_LOCAL_HOUR=21
+
+# ---- Observability ----
+LOG_LEVEL=debug
+```
+
+**Usage:** Copy `.env.example` to `.env` at root and fill in actual values. Apps (api, workers) should load from root `.env` or maintain per-app copies.
+
 5. Connecting the Apps
 
 A. Backend (apps/api)
@@ -176,30 +322,17 @@ B. Mobile (apps/mobile)
   "@chingoo/shared": "workspace:*"
 }
 
-2. Metro Config (metro.config.js): CRITICAL: React Native's bundler does not support symlinks/monorepos out of the box. You MUST create this file in apps/mobile/.
+2. Metro Config (metro.config.js): CRITICAL: React Native's bundler does not support symlinks/monorepos out of the box. You MUST create this file in apps/mobile/ with appropriate configuration for your React Native setup to watch packages/shared and resolve workspace dependencies.
 
-const { getDefaultConfig } = require('expo/metro-config');
-const path = require('path');
+C. Workers (apps/workers)
+1. Dependency: Add @chingoo/shared to package.json:
 
-// Find the workspace root
-const workspaceRoot = path.resolve(__dirname, '../..');
-const projectRoot = __dirname;
+"dependencies": {
+  "@chingoo/shared": "workspace:*",
+  ...
+}
 
-const config = getDefaultConfig(projectRoot);
-
-// 1. Watch the workspace root to pick up changes in packages/shared
-config.watchFolders = [workspaceRoot];
-
-// 2. Let Metro resolve modules from the workspace root node_modules
-config.resolver.nodeModulesPaths = [
-  path.resolve(projectRoot, 'node_modules'),
-  path.resolve(workspaceRoot, 'node_modules'),
-];
-
-// 3. Force Metro to resolve the shared package source
-config.resolver.disableHierarchicalLookup = true;
-
-module.exports = config;
+2. Usage: Workers are BullMQ processors (NestJS Standalone Context) for background jobs (embedding, retention, decay).
 
 6. Implementation Order for AI Agent
 When scaffolding, follow this strict order:
@@ -212,7 +345,13 @@ When scaffolding, follow this strict order:
 
 4. Scaffold API: Initialize NestJS app in apps/api. Add workspace:* dependency.
 
-5. Scaffold Mobile: Initialize Expo app in apps/mobile. Add workspace:* dependency. Create metro.config.js.
+5. Scaffold Mobile: Initialize React Native app in apps/mobile. Add workspace:* dependency. Create metro.config.js.
 
-6. Verify: Run pnpm build at root to ensure packages/shared compiles and is visible to apps.
+6. Scaffold Workers: Create apps/workers directory structure. Add workspace:* dependency to package.json. Workers is **REQUIRED** per SPEC_PATCH.md.
+
+7. Docker Services: Create `docker-compose.yml` at root (see section 3.D). Run `docker compose up -d` to start Postgres, Redis, and Qdrant services. Verify with `docker ps`.
+
+8. Environment Setup: Create `.env` file from `.env.example` at root. Each app (api, workers) should load environment variables from root `.env` or maintain their own copy.
+
+9. Verify: Run pnpm build at root to ensure packages/shared compiles and is visible to apps.
 

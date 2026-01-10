@@ -6,8 +6,7 @@
 
 | Component | Role |
 |-----------|------|
-| **Mobile Client** | React Native (Matched to SDK) + Expo SDK 54. TypeScript. |
-| **Mobile Client** | React Native (Matched to SDK) + Expo SDK 55. TypeScript. |
+| **Mobile Client** | React Native. TypeScript. |
 | **Backend API** | NestJS 10 (Stable) + Fastify (Node 20 LTS). REST/GraphQL endpoints for auth, chat, user-state, persona, settings. |
 | **Workers** | BullMQ (v5.x). Redis (v7.x). Jobs: embedding enqueue, retention tick, decay tick. |
 | **Postgres** | Source-of-truth for users, conversations, messages, memories, relationships, personas, controls. |
@@ -87,7 +86,7 @@
 ```
 chingoo/
 ├── apps/
-│   ├── mobile/                          # React Native + Expo client
+│   ├── mobile/                          # React Native client
 │   │   ├── src/
 │   │   │   ├── navigation/
 │   │   │   ├── screens/
