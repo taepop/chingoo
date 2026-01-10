@@ -1,0 +1,1135 @@
+A) PRE-FLIGHT CHECKLIST (before writing code)
+Local prerequisites (versions are binding)
+
+Node.js v20.x (LTS “Iron”)【turn13file2†L7-L12】
+
+pnpm v9.x (mandatory; no npm/yarn)【turn13file2†L10-L12】【turn13file2†L48-L50】
+
+Turbo ^1.12.0, TypeScript ^5.3.0 (root dev deps)【turn13file7†L12-L15】【turn13file7†L51-L55】
+
+Backend: NestJS v10.x + Fastify platform (no Express)【turn13file2†L13-L18】【turn13file2†L45-L47】
+
+ORM: Prisma v5.x (client must match CLI)【turn13file2†L18-L19】
+
+Mobile: Expo SDK 52, RN 0.76.x, expo-router ^3.5.x or ^4.0.0【turn13file2†L23-L29】
+
+Docker images:
+
+Postgres postgres:16-alpine【turn13file2†L32-L37】
+
+Redis redis:7-alpine【turn13file2†L35-L37】
+
+Qdrant qdrant/qdrant:v1.9.x【turn13file2†L36-L38】
+
+Repo initialization commands + folder verification (MONOREPO_SETUP + SPEC_PATCH)
+
+Run exactly (baseline scaffold):【turn13file10†L40-L58】
+
+mkdir chingoo && cd chingoo
+pnpm init
+pnpm add turbo typescript -D -w
+mkdir -p apps/api apps/mobile
+mkdir -p packages/shared/src/dto packages/shared/src/enums packages/shared/prisma
+touch pnpm-workspace.yaml turbo.json tsconfig.base.json
+cd packages/shared
+pnpm init
+cd ../..
+
+
+Then apply SPEC_PATCH addition: add apps/workers workspace (required)【turn13file9†L63-L76】【turn13file0†L5-L14】.
+
+Target tree must match (plus workers):【turn13file10†L8-L35】【turn13file9†L67-L75】
+
+chingoo/
+  apps/
+    api/
+    mobile/
+    workers/     # REQUIRED (BullMQ processors)
+  packages/
+    shared/
+
+Environment variables required + exact .env.example contents (no secrets)
+
+Create root .env.example (referenced by apps via dotenv / per-app .env copy):
+
+# ---- Core ----
+NODE_ENV=development
+
+# ---- Postgres (Prisma reads DATABASE_URL) ----
+DATABASE_URL=postgresql://chingoo:chingoo@localhost:5432/chingoo?schema=public
+
+# ---- Redis (BullMQ) ----
+REDIS_URL=redis://localhost:6379
+
+# ---- Qdrant ----
+QDRANT_URL=http://localhost:6333
+QDRANT_COLLECTION=memories
+
+# ---- Auth (AWS Cognito JWT) ----
+COGNITO_USER_POOL_ID=
+COGNITO_REGION=
+COGNITO_JWKS_URL=
+
+# ---- LLM / Embeddings (whatever your docs specify in ARCHITECTURE/AI_PIPELINE) ----
+LLM_PROVIDER=
+LLM_API_KEY=
+EMBEDDING_MODEL_DIM=1536
+
+# ---- Retention (quiet hours enforced in logic; timezone comes from onboarding) ----
+RETENTION_MIN_LOCAL_HOUR=10
+RETENTION_MAX_LOCAL_HOUR=21
+
+# ---- Observability ----
+LOG_LEVEL=debug
+
+
+[MINIMAL DEVIATION] Dev auth bypass (only if you don’t have Cognito ready yet)
+Add:
+
+DEV_BYPASS_AUTH=false
+DEV_USER_SUB=dev-sub-0001
+
+
+Reason: ARCHITECTURE expects Cognito JWT extraction【turn13file1†L21-L24】, but projects often can’t validate JWKS on day 1. This bypass is only a dev switch and does not change PRODUCT intent (still token-based auth).
+
+Docker services to run
+
+Create docker-compose.yml at repo root:
+
+Postgres 16 alpine
+
+Redis 7 alpine
+
+Qdrant v1.9.x
+
+Bring them up:
+
+docker compose up -d
+docker ps
+
+“First successful boot” acceptance criteria
+
+You are allowed to proceed only after all are true:
+
+Shared package builds: pnpm -w build succeeds (turbo runs tsc in shared)【turn13file7†L44-L49】【turn13file7†L84-L87】
+
+API starts and exposes a health endpoint (you’ll add it in Q4).
+
+Expo app opens in simulator/device without red screen; metro resolves @chingoo/shared via required metro.config.js【turn13file3†L21-L45】
+
+DB connectivity works: Prisma can connect using DATABASE_URL and run migrations / push.
+
+B) BUILD STRATEGY (why this order)
+
+This order prevents contract drift and “big rewrites”:
+
+Repo scaffold: establishes workspace boundaries + Turbo scripts (hard dependency for everything)【turn13file10†L1-L3】【turn13file7†L44-L49】
+
+Shared DTOs/types: makes API_CONTRACT canonical in code so backend/mobile can’t diverge. (MONOREPO_SETUP explicitly mandates shared as the “glue”)【turn13file7†L73-L76】
+
+Prisma + migrations: schema is authoritative for idempotency (messages.id), surfaced memory targeting, opener_norm, retention tables, etc.【turn13file8†L8-L18】
+
+API skeleton + health: lets you confirm Fastify/Nest boots before adding pipeline complexity (VERSIONS forbids Express)【turn13file2†L16-L18】
+
+Expo skeleton + login screen: must be runnable early (your rule), and you immediately verify workspace linking via metro.config.js【turn13file3†L21-L45】
+
+Onboarding wiring: required answers gating is hard-locked, and ONBOARDING→ACTIVE must be atomic【turn13file4†L15-L36】
+
+/chat/send pipeline + idempotency: core turn flow + replay semantics (COMPLETED replay; PROCESSING returns deterministic “in-progress”)【turn13file0†L69-L76】【turn13file1†L23-L26】
+
+memory/router/post-processor enforcement: these are correctness constraints, not polish (emoji band, opener repeat, similarity rewrite, surfaced_memory_ids logic)【turn13file14†L12-L23】【turn13file14†L25-L47】【turn13file11†L6-L17】
+
+retention worker: required by architecture (BullMQ + quiet hours + caps)【turn13file12†L26-L44】【turn13file1†L11-L14】
+
+e2e flow: only after gates pass.
+
+C) CURSOR QUERY SCRIPT (main part)
+
+How to use: paste one Q at a time into Cursor. Each one is deliberately small.
+
+Q1 — “Scaffold monorepo + turbo config + workspace files”
+
+Touches
+
+/package.json, /pnpm-workspace.yaml, /turbo.json, /tsconfig.base.json
+
+Create folders: apps/api, apps/mobile, apps/workers, packages/shared/...
+
+Constraints (docs)
+
+MONOREPO_SETUP required structure + scripts【turn13file10†L4-L35】【turn13file7†L44-L56】
+
+SPEC_PATCH adds apps/workers【turn13file9†L63-L76】
+
+Tasks Cursor must do
+
+Apply root configs exactly as MONOREPO_SETUP snippets (workspace, turbo, tsconfig).
+
+Add apps/workers folder + minimal package.json + tsconfig.json (empty for now).
+
+Ensure root package.json uses "packageManager": "pnpm@9.0.0"【turn13file7†L55-L56】.
+
+Stop conditions
+
+pnpm -w install completes
+
+pnpm -w build runs (even if no packages yet, turbo should not error)
+
+Run locally
+
+pnpm -w install
+pnpm -w build
+
+
+Expected
+
+No turbo config errors; TypeScript config parses.
+
+Cursor prompt (paste)
+
+Implement monorepo scaffold per MONOREPO_SETUP.md Sections 1–3 and SPEC_PATCH.md “Worker Workspace Setup”. Create root package.json scripts, pnpm-workspace.yaml, turbo.json, tsconfig.base.json, and folder tree including apps/workers. Do NOT add any endpoints/features. After changes, run pnpm -w install && pnpm -w build and report results; do not proceed if failing.
+
+Q2 — “Create packages/shared: Prisma schema + exports + placeholder DTO barrel”
+
+Touches
+
+packages/shared/prisma/schema.prisma (paste from SCHEMA.md)
+
+packages/shared/src/index.ts, packages/shared/src/enums/*, packages/shared/src/dto/*
+
+packages/shared/package.json, packages/shared/tsconfig.json
+
+Constraints
+
+SCHEMA.md is binding for Prisma models (idempotency, surfaced_memory_ids, opener_norm, retention tables)【turn13file8†L8-L18】
+
+Shared package strategy is mandatory【turn13file7†L73-L76】
+
+TS-only code (no JS source files)【turn13file2†L48-L50】 with config exceptions allowed【turn13file0†L49-L56】
+
+Tasks
+
+Paste SCHEMA.md Prisma content into packages/shared/prisma/schema.prisma.
+
+Implement packages/shared/src/index.ts exporting DTOs/enums.
+
+Add db:generate script and prisma deps exactly as MONOREPO_SETUP snippet【turn13file7†L84-L96】.
+
+Stop conditions
+
+pnpm --filter @chingoo/shared build succeeds
+
+pnpm --filter @chingoo/shared db:generate succeeds (creates Prisma client)
+
+Run
+
+pnpm -w install
+pnpm --filter @chingoo/shared build
+pnpm --filter @chingoo/shared db:generate
+
+
+Expected
+
+Prisma client generated; TS build OK.
+
+Cursor prompt
+
+Create packages/shared per MONOREPO_SETUP.md Section 4 and SCHEMA.md. Paste the Prisma schema into packages/shared/prisma/schema.prisma, set package name @chingoo/shared, add scripts build (tsc) and db:generate (prisma generate), and create src/index.ts exports. Do not invent DTO fields—keep DTO files as placeholders to be filled from API_CONTRACT.md in a later step. After changes, run pnpm --filter @chingoo/shared build && pnpm --filter @chingoo/shared db:generate and report results; do not proceed if failing.
+
+Q3 — “Add docker-compose + env templates”
+
+Touches
+
+/docker-compose.yml
+
+/.env.example
+
+Optional per-app .env.example copies
+
+Constraints
+
+Service versions must match VERSIONS.md【turn13file2†L32-L38】
+
+Tasks
+
+Add docker compose for Postgres/Redis/Qdrant with correct image tags.
+
+Add .env.example exactly as in Section A (no secrets).
+
+Stop conditions
+
+docker compose up -d succeeds
+
+Postgres port reachable (5432), Redis (6379), Qdrant (6333)
+
+Run
+
+docker compose up -d
+docker ps
+
+
+Expected
+
+3 containers running.
+
+Cursor prompt
+
+Add root docker-compose.yml for postgres:16-alpine, redis:7-alpine, qdrant/qdrant:v1.9.x (per VERSIONS.md). Add .env.example for DATABASE_URL, REDIS_URL, QDRANT_URL, and Cognito placeholders. After changes, run docker compose up -d && docker ps and report results; do not proceed if failing.
+
+Q4 — “Scaffold NestJS Fastify API + prisma client wiring”
+
+Touches
+
+apps/api/**
+
+depends on @chingoo/shared
+
+Constraints
+
+NestJS v10 + Fastify only【turn13file2†L16-L18】【turn13file2†L45-L47】
+
+Use Prisma v5 client from shared package
+
+Must generate trace_id per turn (SPEC_PATCH requires in AI_PIPELINE TurnPacket)【turn13file0†L59-L64】
+
+Tasks
+
+Create NestJS app with fastify adapter.
+
+Add /health endpoint.
+
+Add PrismaService that imports PrismaClient from @chingoo/shared (generated client).
+
+Add request-scoped trace_id injection (middleware) and structured logger fields.
+
+Stop conditions
+
+pnpm --filter api dev boots
+
+GET /health returns { ok: true }
+
+Run
+
+pnpm --filter api dev
+# in another terminal
+curl -s http://localhost:3000/health
+
+
+Expected
+
+Health JSON response; API logs include trace_id.
+
+Cursor prompt
+
+Scaffold apps/api as NestJS v10 with Fastify adapter (VERSIONS.md). Add dependency "@chingoo/shared":"workspace:*" (MONOREPO_SETUP). Implement PrismaService using PrismaClient from @chingoo/shared. Add middleware to generate trace_id (uuid) per request per SPEC_PATCH/AI_PIPELINE TurnPacket requirement. Add GET /health. After changes, run pnpm --filter api dev and curl http://localhost:3000/health; report results; do not proceed if failing.
+
+Q5 — “Scaffold Expo app + monorepo metro config + minimal screens”
+
+Touches
+
+apps/mobile/** including metro.config.js (JS allowed as config)【turn13file0†L49-L56】【turn13file3†L21-L45】
+
+Constraints
+
+Expo SDK 52, RN 0.76.x, TypeScript【turn13file2†L23-L28】
+
+Must import DTOs/types from @chingoo/shared to prevent drift
+
+Tasks
+
+Create Expo app (TypeScript template).
+
+Add expo-router basic routing: /login, /onboarding, /chat.
+
+Add metro.config.js exactly as MONOREPO_SETUP instructs (watchFolders + nodeModulesPaths)【turn13file3†L21-L44】.
+
+Ensure app boots even before backend endpoints exist (mock the API calls behind a config flag).
+
+Stop conditions
+
+pnpm --filter mobile dev opens app without red screen
+
+Metro resolves @chingoo/shared
+
+Run
+
+pnpm --filter mobile dev
+
+
+Expected
+
+You can navigate between three screens.
+
+Cursor prompt
+
+Scaffold apps/mobile with Expo SDK 52 + TypeScript and expo-router routes /login, /onboarding, /chat. Add @chingoo/shared workspace dependency. Create apps/mobile/metro.config.js exactly per MONOREPO_SETUP.md (watchFolders + nodeModulesPaths + disableHierarchicalLookup). App must boot immediately. After changes, run pnpm --filter mobile dev and report results; do not proceed if failing.
+
+Q6 — “Implement shared DTOs/enums from API_CONTRACT.md (canonical) + SPEC_PATCH additions”
+
+Touches
+
+packages/shared/src/enums.ts (or /enums/*)
+
+packages/shared/src/dto/*
+
+packages/shared/src/index.ts
+
+Constraints
+
+API_CONTRACT is canonical for paths + DTO field names (your hard rule)
+
+SPEC_PATCH adds ApiErrorDto, POST /user/device RegisterDeviceDto, DELETE /user/me【turn13file0†L24-L38】【turn13file9†L21-L41】
+
+Tasks
+
+Copy all enums + DTO interfaces into @chingoo/shared exactly (no renames).
+
+Add ApiErrorDto exactly as patch.
+
+Export everything from src/index.ts.
+
+Stop conditions
+
+pnpm --filter @chingoo/shared build succeeds
+
+Typecheck in api/mobile passes
+
+Run
+
+pnpm -w build
+
+
+Expected
+
+No TS compile errors across repo.
+
+Cursor prompt
+
+Populate packages/shared DTOs and enums by copying exactly from API_CONTRACT.md (canonical), plus SPEC_PATCH.md additions: ApiErrorDto, RegisterDeviceDto, DELETE /user/me contract notes. Do not invent fields. Ensure exports in packages/shared/src/index.ts. After changes, run pnpm -w build and report results; do not proceed if failing.
+
+Q7 — “Implement Auth: unified /auth/login + request auth guard”
+
+Touches
+
+apps/api/src/auth/*
+
+Mobile: login screen call + token storage (MMKV recommended by VERSIONS)【turn13file2†L29-L30】
+
+Constraints
+
+Cognito JWT extraction in architecture chat flow【turn13file1†L21-L24】
+
+/auth/signup is NOT implemented separately (SPEC_PATCH)【turn13file0†L78-L82】
+
+Must return 401 on missing/invalid auth (SPEC_PATCH error codes)【turn13file0†L41-L47】
+
+Tasks
+
+Implement POST /auth/login exactly per API_CONTRACT DTOs. (It should create/find User by cognito_sub in schema.)
+
+Implement auth guard that:
+
+Validates JWT via JWKS (if configured)
+
+[MINIMAL DEVIATION] if DEV_BYPASS_AUTH=true, accepts Authorization: Bearer dev and uses DEV_USER_SUB.
+
+Mobile:
+
+Call /auth/login
+
+Store token in MMKV
+
+Attach Authorization header for all calls.
+
+Stop conditions
+
+Calling /auth/login returns valid response
+
+Calling /user/me without token returns 401
+
+Run
+
+pnpm --filter api test
+curl -i http://localhost:3000/user/me
+
+
+Expected
+
+401 for missing auth; login works with dev bypass if enabled.
+
+Cursor prompt
+
+Implement auth per ARCHITECTURE.md (Cognito JWT extraction) and SPEC_PATCH note that /auth/signup is not separate. Implement POST /auth/login exactly per API_CONTRACT DTOs and return ApiErrorDto on failures (SPEC_PATCH). Add AuthGuard for protected endpoints returning 401 when missing/invalid. If Cognito config is absent, add DEV_BYPASS_AUTH minimal dev-only bypass (labeled in code). After changes, run API unit tests and curl -i /user/me; report results; do not proceed if failing.
+
+Q8 — “Implement user state machine endpoints: GET /user/me, POST /user/onboarding, POST /user/device, DELETE /user/me”
+
+Touches
+
+apps/api/src/user/*
+
+Prisma queries for onboarding answers + controls + push token
+
+Constraints
+
+Required onboarding answers list is hard-locked【turn13file4†L1-L13】
+
+ONBOARDING→ACTIVE is not here yet, but onboarding must create required rows
+
+Push token storage required in schema + endpoint (SPEC_PATCH)【turn13file9†L4-L33】
+
+Tasks
+
+GET /user/me: returns state CREATED/ONBOARDING/ACTIVE (from users.state enum)【turn13file5†L25-L29】.
+
+POST /user/onboarding:
+
+Validate required fields exist in request (preferred_name, age_band, country_or_region, occupation_category, client_timezone, proactive_messages_enabled, suppressed_topics)【turn13file4†L5-L12】
+
+Persist user_onboarding_answers and user_controls
+
+Assign persona + create conversation + relationship row if not exists
+
+Return conversation_id for chat (ARCHITECTURE says onboarding creates/returns conversation_id)【turn13file1†L50-L53】
+
+POST /user/device stores push_token (and platform) per SPEC_PATCH endpoint contract【turn13file9†L21-L33】
+
+DELETE /user/me hard deletes user data per SPEC_PATCH【turn13file9†L35-L41】
+
+Stop conditions
+
+Happy path: login → onboarding → GET /user/me shows ONBOARDING (or ACTIVE only after first chat)
+
+Missing onboarding fields returns 400 with ApiErrorDto constraints【turn13file0†L41-L44】
+
+Run
+
+pnpm --filter api dev
+# then hit endpoints using curl or insomnia
+
+
+Expected
+
+Onboarding creates conversation_id and stores answers.
+
+Cursor prompt
+
+Implement user endpoints per API_CONTRACT.md + SPEC_PATCH: GET /user/me, POST /user/onboarding, POST /user/device (RegisterDeviceDto), DELETE /user/me. Enforce required onboarding fields exactly per AI_PIPELINE.md §1.1 mirror list and store them. Do not transition to ACTIVE here (that happens on first chat atomically). After changes, run pnpm -w build and manual curl smoke; report results; do not proceed if failing.
+
+Q9 — “Implement /chat/send with idempotency + ONBOARDING→ACTIVE atomicity + assistant message insert”
+
+Touches
+
+apps/api/src/chat/*
+
+DB transaction logic
+
+Constraints
+
+Chat flow steps + idempotency check per ARCHITECTURE【turn13file1†L23-L26】【turn13file15†L8-L13】
+
+ONBOARDING→ACTIVE must be one interactive Prisma transaction and rollback on failure【turn13file4†L15-L36】
+
+Replay semantics: COMPLETED → return stored assistant reply; RECEIVED/PROCESSING → deterministic in-progress response【turn13file0†L69-L76】
+
+SPEC_PATCH corrects persistence: assistant response is a new message row with same trace_id【turn13file9†L46-L61】
+
+Tasks
+
+On ingress:
+
+Generate trace_id (already in middleware)
+
+Check messages by incoming message_id (user message id). If COMPLETED: fetch the assistant message for that trace_id and return it.
+
+If RECEIVED/PROCESSING: return “in-progress” response (match API_CONTRACT semantics).
+
+If user state is ONBOARDING and this is first chat:
+
+In one prisma.$transaction closure:
+
+insert user message row keyed by message_id【turn13file4†L21-L22】
+
+re-check required onboarding answers exist【turn13file4†L22-L23】
+
+re-check persona exists【turn13file4†L23-L24】
+
+set user state ACTIVE【turn13file4†L25-L27】
+
+update relationship last_interaction_at NOW (AI_PIPELINE rule)【turn13file4†L25-L27】
+
+After orchestration produces final_response:
+
+In transaction:
+
+insert assistant message row (new UUID) with role assistant, status COMPLETED, surfaced_memory_ids, same trace_id【turn13file9†L48-L56】
+
+(relationship/memory updates happen in later Qs)
+
+Return assistant_message object.
+
+Stop conditions
+
+First chat from ONBOARDING transitions to ACTIVE atomically (no orphaned message)
+
+Re-sending same message_id returns exact same assistant reply, no double insert
+
+Run
+
+pnpm --filter api test
+
+
+Expected
+
+Tests for idempotency + atomicity pass (you’ll add them in Q12).
+
+Cursor prompt
+
+Implement POST /chat/send strictly per ARCHITECTURE.md D.1 + AI_PIPELINE.md §4.1.2 and SPEC_PATCH “Chat Turn Persistence Model” correction. Must: (1) idempotency by user message_id, (2) replay semantics: COMPLETED returns stored assistant reply; RECEIVED/PROCESSING returns deterministic in-progress response, (3) ONBOARDING→ACTIVE atomic commit in a single Prisma interactive transaction with required answer + persona checks, (4) persist assistant response as a NEW messages row with same trace_id. After changes, run pnpm --filter api test and report results; do not proceed if failing.
+
+Q10 — “Implement RouterService + TopicMatch deterministic scoring”
+
+Touches
+
+apps/api/src/router/*
+
+possibly shared enums for TopicID, RoutingOutcome
+
+Constraints
+
+Topic detection confidence formula must match AI_PIPELINE exactly【turn13file4†L65-L67】
+
+Router integrates into TurnPacket build (ARCHITECTURE step list)【turn13file15†L13-L18】
+
+Tasks
+
+Implement normalization for routing (norm_no_punct, tokenization) per architecture step 4–7【turn13file15†L11-L15】.
+
+Implement deterministic keyword TopicMatch producing (TopicID, confidence) with:
+
+confidence = min(1.0, 0.35 + 0.15 * hit_count) where hit_count is distinct keyword hits【turn13file4†L65-L67】
+
+Output routing decision object used by orchestrator.
+
+Stop conditions
+
+Unit tests: 2 TopicMatch examples pass (see Section D)
+
+Run
+
+pnpm --filter api test
+
+
+Cursor prompt
+
+Implement TopicMatch + RouterService per AI_PIPELINE.md §5.1 and ARCHITECTURE.md D.1 steps 4–11. Topic confidence MUST equal min(1.0, 0.35 + 0.15*hit_count) with distinct keyword hits. Do not add new topics beyond shared enums/API_CONTRACT. After changes, run pnpm --filter api test and report results; do not proceed if failing.
+
+Q11 — “Implement Memory extraction + correction targeting via surfaced_memory_ids + PostProcessor enforcement”
+
+Touches
+
+apps/api/src/memory/*
+
+apps/api/src/postprocessor/*
+
+message writeback includes surfaced_memory_ids
+
+Constraints
+
+surfaced_memory_ids is used for personal fact counting and correction targeting【turn13file14†L12-L23】【turn13file8†L16-L17】
+
+PostProcessor must enforce:
+
+opener repeat rule (10.2)【turn13file6†L72-L83】
+
+3-gram Jaccard >=0.70 rewrite (10.3)【turn13file14†L38-L47】
+
+emoji band by persona emoji_freq (10.4)【turn13file11†L6-L17】
+
+personal_fact_count rules (10.1)【turn13file14†L12-L23】
+
+Tasks
+
+Memory extraction MVP:
+
+Implement cheap regex/heuristics for preference/fact/correction flags (AI_PIPELINE stage A signals)【turn13file4†L54-L59】
+
+Persist Memory rows with status ACTIVE; dedup by memory_key (as schema supports)
+
+Correction targeting:
+
+If user message has correction intent, require surfaced_memory_ids from the last assistant message and mark targeted memories INVALID/SUPERSEDED (per your spec’s correction flow).
+
+PostProcessor:
+
+Compute opener_norm as first 12 tokens after stripping emojis + normalization; store opener_norm on assistant messages【turn13file6†L74-L83】【turn13file8†L17-L18】
+
+Enforce emoji band and rewrite if out of band【turn13file11†L6-L17】
+
+Enforce repetition via opener match and Jaccard >= 0.70 rule【turn13file6†L81-L83】【turn13file14†L38-L47】
+
+Enforce personal fact count based strictly on surfaced_memory_ids【turn13file14†L12-L23】
+
+Stop conditions
+
+Unit tests for postprocessor pass (Section D)
+
+Memory correction test passes
+
+Run
+
+pnpm --filter api test
+
+
+Cursor prompt
+
+Implement memory extraction + correction targeting and post-processing hard gates strictly per AI_PIPELINE.md §10.1–10.5 and Stage A heuristics. Must use surfaced_memory_ids for personal fact counting and for correction targeting. Implement opener_norm extraction as specified and store it on assistant messages. Enforce emoji band and anti-repetition (opener match and 3-gram Jaccard >=0.70). After changes, run pnpm --filter api test and report results; do not proceed if failing.
+
+Q12 — “Implement relationship delta update + session accounting”
+
+Touches
+
+apps/api/src/relationship/*
+
+called from chat pipeline write transaction
+
+Constraints
+
+Session boundary: new session if last user msg > 4 hours【turn13file11†L41-L44】
+
+Delta evidence + exact numeric rules + clamp [-2,+5] and rapport_score [0,100]【turn13file11†L55-L71】
+
+Tasks
+
+Implement session accounting + disengaged detection (>=3 short replies in a session triggers -2)【turn13file11†L51-L67】
+
+Implement delta rules:
+
+preference share +1 or +2 if >=2 distinct preferences
+
+meaningful response +1
+
+emotional disclosure +4
+
+past reference +4
+
+clamp delta and rapport_score【turn13file11†L58-L71】
+
+Stop conditions
+
+Relationship unit tests (delta clamp cases) pass
+
+Run
+
+pnpm --filter api test
+
+
+Cursor prompt
+
+Implement RelationshipService update per AI_PIPELINE.md §11.1–11.3. Session boundary is 4 hours; disengaged rule is >=3 short replies in a session; delta rules and clamps must match exactly and be deterministic. After changes, run pnpm --filter api test and report results; do not proceed if failing.
+
+Q13 — “Workers: BullMQ retention tick + eligibility + quiet hours + caps”
+
+Touches
+
+apps/workers/**
+
+queue definitions shared with API
+
+retention eligibility queries
+
+Constraints
+
+Workers exist + BullMQ + Redis【turn13file1†L11-L14】
+
+Retention worker tick steps including quiet hours [10:00, 21:00] local and other eligibility rules【turn13file12†L31-L44】
+
+Tasks
+
+Create Nest standalone worker app (not HTTP) that connects to Redis and runs:
+
+hourly cron (or BullMQ repeatable job)
+
+selects eligible users:
+
+ACTIVE users, proactive enabled, not muted, stage != STRANGER, quiet hours window, daily cap, inactivity threshold with backoff multiplier【turn13file12†L30-L38】
+
+Insert retention_attempt, send push notification (for MVP, stub sending but still record attempts).
+
+Device token comes from users.push_token (SPEC_PATCH)【turn13file9†L10-L19】
+
+Stop conditions
+
+Worker process starts and logs a “tick completed”
+
+Creates a retention_attempt row for a seeded eligible user
+
+Run
+
+pnpm --filter workers dev
+
+
+Cursor prompt
+
+Implement apps/workers per SPEC_PATCH worker workspace requirement and ARCHITECTURE.md D.3 retention tick. Use BullMQ v5 + Redis. Enforce quiet hours local_time in [10:00,21:00], proactive_messages_enabled, mute_until, stage != STRANGER, daily cap, inactivity threshold with backoff multiplier. For MVP, sending push may be stubbed but DB rows must be written deterministically. After changes, run pnpm --filter workers dev and report results; do not proceed if failing.
+
+Q14 — “Mobile e2e wiring: onboarding → chat → idempotency replay demo”
+
+Touches
+
+apps/mobile screens + api client
+
+Constraints
+
+Must generate client message_id UUID (schema assumption)【turn13file8†L33-L35】
+
+Must show replay behavior by resending same message_id
+
+Tasks
+
+Onboarding screen collects required fields and posts /user/onboarding.
+
+Chat screen:
+
+sends POST /chat/send with generated UUID message_id
+
+stores last sent message_id; allow “resend last message_id” button
+
+Display:
+
+assistant reply
+
+surfaced_memory_ids (debug view)
+
+Stop conditions
+
+Full demo passes acceptance criteria (Section F)
+
+Run
+
+pnpm --filter mobile dev
+
+
+Cursor prompt
+
+Wire mobile e2e flow: login → onboarding → chat. Client must generate UUID message_id before send (SCHEMA.md assumptions) and support a UI action to resend the same message_id to verify replay. Display assistant reply and surfaced_memory_ids in a debug panel. After changes, run pnpm --filter mobile dev and report results; do not proceed if failing.
+
+D) TEST GATES (non-negotiable)
+
+Implement as Jest tests in apps/api (and worker tests where relevant). These must exist and pass before moving forward.
+
+1) Router golden tests (2)
+
+Test R1 — Onboarding gating → ONBOARDING_CHAT
+
+Input: user_state=ONBOARDING, missing required answers
+
+Expected: routing outcome ONBOARDING_CHAT, missing_fields includes preferred_name (or whatever field missing)
+
+Basis: must rollback and return ONBOARDING_CHAT if required answers missing【turn13file4†L28-L32】
+
+Test R2 — Active normal chat → FRIEND_CHAT (or equivalent)
+
+Input: user_state=ACTIVE, benign message
+
+Expected: routing outcome is the normal chat pipeline (not onboarding)
+
+2) TopicMatch scoring tests (2)
+
+Test T1 — Confidence formula single hit
+
+Keywords: choose a TopicID list from your canonical enums.
+
+Provide a message containing 1 distinct keyword.
+
+Expected confidence: min(1.0, 0.35 + 0.15*1) = 0.50【turn13file4†L65-L67】
+
+Test T2 — Confidence formula 3 hits
+
+hit_count = 3 distinct keyword hits
+
+Expected confidence: 0.35 + 0.45 = 0.80【turn13file4†L65-L67】
+
+3) ONBOARDING→ACTIVE atomic transaction tests (2)
+
+Test O1 — Success commits both
+
+Given: onboarding answers exist + persona exists
+
+When: first /chat/send arrives while user_state=ONBOARDING
+
+Expect:
+
+users.state becomes ACTIVE
+
+message row with that message_id exists
+
+Basis: atomic commit requirements【turn13file4†L19-L27】【turn13file4†L34-L36】
+
+Test O2 — Failure rolls back both
+
+Given: onboarding answers missing
+
+When: first /chat/send
+
+Expect:
+
+users.state remains ONBOARDING
+
+no message row exists for that message_id
+
+Basis: “Orphaned messages in ONBOARDING state are not allowed”【turn13file4†L34-L36】
+
+4) /chat/send idempotency replay tests (2)
+
+Test I1 — COMPLETED replay returns same assistant reply
+
+First call creates assistant message row and returns it
+
+Second call with same message_id returns exact same assistant content, no new assistant row
+
+Basis: COMPLETED replay rule + “MUST NOT produce more than one assistant message”【turn13file0†L69-L76】
+
+Test I2 — In-progress response
+
+Simulate existing user message status = RECEIVED or PROCESSING
+
+Same message_id returns deterministic in-progress response (whatever API_CONTRACT dictates)
+
+Basis: replay semantics【turn13file0†L73-L75】
+
+5) Memory correction targeting tests (2)
+
+Test M1 — surfaced_memory_ids drive targeting
+
+Given: assistant message surfaced_memory_ids = [A, B]
+
+User: “that’s not true / don’t remember that” (correction heuristic)【turn13file4†L58-L59】
+
+Expected: Memory A or B marked INVALID/SUPERSEDED (depending on correction type)
+
+Test M2 — No surfaced ids → no mutation
+
+If surfaced_memory_ids empty, correction intent should not randomly invalidate memories.
+
+6) Post-processor enforcement tests (2)
+
+Test P1 — Opener similarity rewrite triggers
+
+Provide raw response with opener_norm matching one of last 20 assistant opener_norm values
+
+Expected: rewrite invoked; stored assistant opener_norm differs
+
+Basis: exact match rule【turn13file6†L81-L83】
+
+Test P2 — Emoji band enforcement
+
+Persona emoji_freq = light
+
+raw response contains 5 emojis
+
+Expected: rewritten to emoji_count in [0,2]【turn13file11†L10-L17】
+
+7) Retention eligibility/quiet hours tests (2)
+
+Test E1 — Quiet hours block
+
+User timezone such that local time is 23:00
+
+Expected: not eligible
+
+Basis: quiet hours window [10:00, 21:00]【turn13file12†L31-L33】
+
+Test E2 — Stage STRANGER block
+
+ACTIVE user but stage=STRANGER
+
+Expected: not eligible【turn13file12†L34-L36】
+
+E) GIT COMMITS & PUSH CADENCE
+Commit timing (strict)
+
+Commit after: Q1, Q2, Q4, Q5, Q6, Q8, Q9, Q11, Q13, Q14
+(If a Q is tiny and only fixes compilation, you may fold it into the prior commit.)
+
+Suggested commit messages
+
+chore: scaffold monorepo workspace + turbo
+
+feat(shared): add prisma schema + shared package build
+
+feat(api): bootstrap nest fastify + health + trace_id
+
+feat(mobile): scaffold expo-router + monorepo metro config
+
+feat(shared): import canonical DTOs/enums from API_CONTRACT
+
+feat(api): auth login + auth guard (cognito jwks)
+
+feat(api): user onboarding + device registration + delete me
+
+feat(api): chat send idempotency + onboarding->active atomic
+
+feat(api): memory + postprocessor enforcement
+
+feat(workers): retention tick + eligibility + quiet hours
+
+feat(mobile): e2e flow + idempotency replay demo
+
+When to push
+
+Push after each “vertical slice” milestone:
+
+After Q5 (apps boot)
+
+After Q9 (chat idempotency + atomicity)
+
+After Q13 (retention worker)
+
+After Q14 (full demo)
+
+Rules to prevent big-bang commits
+
+One commit must not touch all three: shared + api + mobile unless it’s a pure type rename required by API_CONTRACT.
+
+If you touch DTOs, you must also run pnpm -w build before committing.
+
+Rollback plan
+
+Tag milestones:
+
+git tag mvp-boot after Q5
+
+git tag mvp-chat-core after Q9
+
+git tag mvp-retention after Q13
+
+If a later step breaks, reset to the last tag and re-apply only the minimal necessary changes.
+
+F) MVP “WORKS” DEFINITION (acceptance criteria)
+
+A single minimal e2e demo is “DONE” only if all steps succeed:
+
+Signup/login via unified /auth/login behavior (no separate /auth/signup)【turn13file0†L78-L82】
+
+GET /user/me reflects user state CREATED → ONBOARDING → ACTIVE (state is Prisma enum)【turn13file5†L25-L29】
+
+POST /user/onboarding stores required answers (mirror list)【turn13file4†L1-L13】 and returns conversation_id (per architecture onboarding flow)【turn13file1†L50-L53】
+
+First POST /chat/send while ONBOARDING transitions to ACTIVE atomically (no orphan message)【turn13file4†L19-L36】
+
+Re-sending the same message_id returns the same assistant reply and does not create a second assistant message【turn13file0†L69-L76】
+
+GET /chat/history returns user/assistant message pairs (per your API_CONTRACT)
+
+Memory surfaced ids + correction flow works at least once (see surfaced_memory_ids logic)【turn13file14†L12-L23】
+
+Post-processor visibly enforces at least one rule:
+
+emoji band corrected into range【turn13file11†L10-L17】 or
+
+opener repeat rewritten【turn13file6†L81-L83】
+
+G) “IF SOMETHING BREAKS” PLAYBOOK
+1) Tooling break (pnpm/turbo/tsconfig)
+
+Symptoms
+
+Turbo can’t find packages, TS project references fail.
+
+Checks
+
+Root pnpm-workspace.yaml includes apps/* and packages/*【turn13file10†L63-L68】
+
+Root packageManager is pnpm@9.0.0【turn13file7†L55-L56】
+
+No JS source files were introduced (config JS is allowed exception only)【turn13file2†L48-L50】【turn13file0†L49-L56】
+
+Fix
+
+Re-run pnpm -w install then pnpm -w build.
+
+2) Prisma/schema mismatch
+
+Symptoms
+
+Runtime errors querying columns; migrations fail.
+
+Checks
+
+Ensure packages/shared/prisma/schema.prisma matches SCHEMA.md models.
+
+Confirm messages.id is PK/unique (idempotency key)【turn13file8†L8-L10】
+
+Fix
+
+Regenerate client: pnpm --filter @chingoo/shared db:generate
+
+Re-run migrations/push.
+
+3) Metro / monorepo module resolution (Expo)
+
+Symptoms
+
+Unable to resolve @chingoo/shared or duplicate React copies.
+
+Checks
+
+apps/mobile/metro.config.js must watch workspace root and set nodeModulesPaths【turn13file3†L21-L44】
+
+Fix
+
+Clear cache: pnpm --filter mobile dev -- --clear
+
+Verify workspace root is correct (../..).
+
+4) DTO / contract drift vs code bug
+
+How to tell
+
+If mobile compiles but server 400s due to missing fields → likely DTO mismatch.
+
+If server passes validation but logic wrong → code bug.
+
+Contract drift detection
+
+Diff packages/shared/src/dto against API_CONTRACT.md (canonical).
+
+SPEC_PATCH additions must be present (ApiErrorDto, /user/device, /user/me delete)【turn13file0†L24-L38】【turn13file9†L21-L41】
+
+Fix
+
+Do not “patch” in API controllers first; fix the shared DTOs, then update both client/server to match.
+
+5) Auth mismatch
+
+Symptoms
+
+Everything returns 401.
+
+Checks
+
+Cognito JWKS URL env set
+
+Authorization header present
+
+Fix
+
+For local only: enable DEV_BYPASS_AUTH=true (the minimal deviation path), then verify /user/me works. Later, disable and validate JWKS.
+
+6) ONBOARDING→ACTIVE atomicity break (your known failure mode)
+
+Symptoms
+
+First signup creates account but app can’t proceed; subsequent attempt says account exists.
+
+Checks
+
+Must be one Prisma interactive transaction: insert message + update user state within same closure【turn13file4†L34-L36】
+
+If required answers/persona missing, rollback and return ONBOARDING_CHAT with missing fields【turn13file4†L28-L32】
+
+Fix
+
+Wrap the entire “first message” path in prisma.$transaction(async (tx) => { ... }) and ensure no writes happen outside it.
+
+If you want, I can also turn Q1–Q14 into a copy-paste “Cursor checklist” markdown file you keep in the repo (but I won’t invent any endpoints/DTO fields beyond API_CONTRACT).

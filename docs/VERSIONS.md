@@ -23,9 +23,10 @@
 ## 3. Mobile Stack (`apps/mobile`)
 | Library | Version Constraint | Context |
 |---------|--------------------|---------|
-| **Expo SDK** | `SDK 52` | **Latest Stable.** strictly paired with React Native version below. |
-| **React Native** | `0.76.x` | New Architecture enabled. |
-| **Router** | `expo-router@^3.5.x` or `^4.0.0` | File-based routing (check SDK 52 compatibility). |
+| **Expo SDK** | `SDK 54` | **Required by Client Environment.** |
+| **Expo SDK** | `SDK 55` | **Required by Client Environment.** |
+| **React Native** | `Latest supported by SDK 54` | Let `npx create-expo-app` determine the exact RN version (likely 0.77+). |
+| **Router** | `expo-router@latest` | Must match SDK 54 compatibility. |
 | **Storage** | `react-native-mmkv` | High-performance storage replacement for AsyncStorage. |
 | **Styling** | `tamagui` OR `nativewind` | Preference: Typesafe styling. |
 

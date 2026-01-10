@@ -15,7 +15,7 @@ chingoo/
 │   │   ├── src/
 │   │   ├── package.json  # Depends on "@chingoo/shared"
 │   │   └── tsconfig.json
-│   └── mobile/           # Expo SDK 52 (Frontend)
+│   └── mobile/           # Expo SDK 54 (Frontend) # Expo SDK 55 (Frontend)
 │       ├── src/
 │       ├── app.json
 │       ├── metro.config.js # CRITICAL: Configured to watch packages/shared
@@ -215,3 +215,4 @@ When scaffolding, follow this strict order:
 5. Scaffold Mobile: Initialize Expo app in apps/mobile. Add workspace:* dependency. Create metro.config.js.
 
 6. Verify: Run pnpm build at root to ensure packages/shared compiles and is visible to apps.
+
