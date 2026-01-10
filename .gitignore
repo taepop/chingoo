@@ -1,22 +1,23 @@
-# deps
+# Dependencies
 node_modules/
+**/node_modules/
 .pnpm-store/
 
-# build outputs
+# Build outputs
 dist/
 **/dist/
 *.tsbuildinfo
 
-# expo / RN
+# Turbo
+.turbo/
+
+# Expo / React Native
 .expo/
 apps/mobile/.expo/
 apps/mobile/web-build/
 
-# turbo
-.turbo/
-
-# env
+# Env
 .env
 
-# logs
+# Logs
 *.log
