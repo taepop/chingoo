@@ -12,14 +12,14 @@ export interface JwtPayload {
 export class JwtStrategy extends PassportStrategy(Strategy) {
   constructor(private prisma: PrismaService) {
     // [MINIMAL DEVIATION] Dev bypass: use a simple secret for local development
-    const devBypass = process.env.AUTH_DEV_BYPASS === 'true';
+    const devBypass = process.env.DEV_BYPASS_AUTH === 'true';
     const secret = devBypass
       ? process.env.JWT_SECRET || 'dev-secret-change-in-production'
       : process.env.JWT_SECRET;
 
     if (!secret) {
       throw new Error(
-        'JWT_SECRET not configured. Set JWT_SECRET env var or enable AUTH_DEV_BYPASS=true',
+        'JWT_SECRET not configured. Set JWT_SECRET env var or enable DEV_BYPASS_AUTH=true',
       );
     }
 

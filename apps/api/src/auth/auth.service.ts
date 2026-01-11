@@ -17,7 +17,7 @@ export class AuthService {
   ) {
     // [MINIMAL DEVIATION] Dev-only bypass for local development when JWKS config is missing
     // Default OFF - must explicitly enable via env var
-    this.devBypassEnabled = process.env.AUTH_DEV_BYPASS === 'true';
+    this.devBypassEnabled = process.env.DEV_BYPASS_AUTH === 'true';
 
     // Initialize JWKS client if not in dev bypass mode
     if (!this.devBypassEnabled) {
@@ -26,7 +26,7 @@ export class AuthService {
 
       if (!cognitoUserPoolId) {
         throw new Error(
-          'AWS_COGNITO_USER_POOL_ID is required when AUTH_DEV_BYPASS is not enabled',
+          'AWS_COGNITO_USER_POOL_ID is required when DEV_BYPASS_AUTH is not enabled',
         );
       }
 
@@ -47,29 +47,26 @@ export class AuthService {
     email?: string;
   }> {
     if (this.devBypassEnabled) {
-      // [MINIMAL DEVIATION] Dev bypass: accept any token and extract sub from payload
-      // This allows local development without Cognito setup
+      // [MINIMAL DEVIATION] Dev bypass: use DEV_USER_SUB for deterministic user identity
+      // This allows local development without Cognito setup and ensures stable user across runs
+      const devUserSub = process.env.DEV_USER_SUB || 'dev-sub-0001';
+      
+      // Optionally decode token to extract email if present
+      let email: string | undefined;
       try {
         const decoded = jwt.decode(identityToken, { complete: true });
-        if (!decoded || typeof decoded === 'string') {
-          throw new UnauthorizedException('Invalid token format');
+        if (decoded && typeof decoded !== 'string' && decoded.payload) {
+          const payload = decoded.payload as { email?: string };
+          email = payload.email;
         }
-
-        const payload = decoded.payload as { sub?: string; email?: string };
-        if (!payload.sub) {
-          throw new UnauthorizedException('Token missing sub claim');
-        }
-
-        return {
-          sub: payload.sub,
-          email: payload.email,
-        };
-      } catch (error) {
-        if (error instanceof UnauthorizedException) {
-          throw error;
-        }
-        throw new UnauthorizedException('Failed to decode token');
+      } catch {
+        // Ignore decode errors in dev bypass - we'll use the deterministic sub
       }
+
+      return {
+        sub: devUserSub,
+        email,
+      };
     }
 
     // Production: Validate token with Cognito JWKS
