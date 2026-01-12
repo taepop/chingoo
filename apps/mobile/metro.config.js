@@ -1,6 +1,5 @@
 // metro.config.js
-// CRITICAL: Configured to watch packages/shared and resolve workspace dependencies
-// Per MONOREPO_SETUP.md: React Native's bundler does not support symlinks/monorepos out of the box
+// Per MONOREPO_SETUP.md: Configure Metro for monorepo workspace resolution
 
 const { getDefaultConfig } = require('expo/metro-config');
 const path = require('path');
@@ -8,19 +7,26 @@ const path = require('path');
 // Find the project and workspace directories
 const projectRoot = __dirname;
 const monorepoRoot = path.resolve(projectRoot, '../..');
+const sharedPackagePath = path.resolve(monorepoRoot, 'packages/shared');
 
 const config = getDefaultConfig(projectRoot);
 
-// Watch all files in the monorepo
-config.watchFolders = [monorepoRoot];
+// Add the shared package to watch folders (keep Expo defaults)
+config.watchFolders = [
+  ...(config.watchFolders || []),
+  sharedPackagePath,
+];
 
-// Let Metro know where to resolve packages
+// Let Metro know where to resolve packages in monorepo
 config.resolver.nodeModulesPaths = [
   path.resolve(projectRoot, 'node_modules'),
   path.resolve(monorepoRoot, 'node_modules'),
 ];
 
-// Disable hierarchical lookup to ensure workspace packages are resolved correctly
-config.resolver.disableHierarchicalLookup = true;
+// Exclude backend code from bundling
+config.resolver.blockList = [
+  ...(config.resolver.blockList || []),
+  /.*\/apps\/api\/.*/,
+];
 
 module.exports = config;

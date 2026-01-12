@@ -2,3 +2,52 @@
 > @chingoo/api@0.0.0 build C:\Users\moshl\Projects\chingoo\apps\api
 > nest build
 
+[1m[31mERROR[39m[22m in [1m./src/app.module.ts[39m[22m [1m[32m44:17-42[39m[22m
+[1mModule [1m[31mnot found[39m[22m[1m: [1m[31mError[39m[22m[1m: Can't resolve '@nestjs/config' in 'C:\Users\moshl\Projects\chingoo\apps\api\src'[39m[22m
+resolve '@nestjs/config' in 'C:\Users\moshl\Projects\chingoo\apps\api\src'
+  Parsed request is a module
+  using description file: C:\Users\moshl\Projects\chingoo\apps\api\package.json (relative path: ./src)
+    resolve as module
+[1m[31m      C:\Users\moshl\Projects\chingoo\apps\api\src\node_modules doesn't exist[39m[22m or is not a directory
+      looking for modules in C:\Users\moshl\Projects\chingoo\apps\api\node_modules
+        single file module
+          using description file: C:\Users\moshl\Projects\chingoo\apps\api\package.json (relative path: ./node_modules/@nestjs/config)
+            no extension
+[1m[31m              C:\Users\moshl\Projects\chingoo\apps\api\node_modules\@nestjs\config doesn't exist[39m[22m
+            .tsx
+[1m[31m              C:\Users\moshl\Projects\chingoo\apps\api\node_modules\@nestjs\config.tsx doesn't exist[39m[22m
+            .ts
+[1m[31m              C:\Users\moshl\Projects\chingoo\apps\api\node_modules\@nestjs\config.ts doesn't exist[39m[22m
+            .js
+[1m[31m              C:\Users\moshl\Projects\chingoo\apps\api\node_modules\@nestjs\config.js doesn't exist[39m[22m
+[1m[31m        C:\Users\moshl\Projects\chingoo\apps\api\node_modules\@nestjs\config doesn't exist[39m[22m
+[1m[31m      C:\Users\moshl\Projects\chingoo\apps\node_modules doesn't exist[39m[22m or is not a directory
+      looking for modules in C:\Users\moshl\Projects\chingoo\node_modules
+        single file module
+          using description file: C:\Users\moshl\Projects\chingoo\package.json (relative path: ./node_modules/@nestjs/config)
+            no extension
+[1m[31m              C:\Users\moshl\Projects\chingoo\node_modules\@nestjs\config doesn't exist[39m[22m
+            .tsx
+[1m[31m              C:\Users\moshl\Projects\chingoo\node_modules\@nestjs\config.tsx doesn't exist[39m[22m
+            .ts
+[1m[31m              C:\Users\moshl\Projects\chingoo\node_modules\@nestjs\config.ts doesn't exist[39m[22m
+            .js
+[1m[31m              C:\Users\moshl\Projects\chingoo\node_modules\@nestjs\config.js doesn't exist[39m[22m
+[1m[31m        C:\Users\moshl\Projects\chingoo\node_modules\@nestjs\config doesn't exist[39m[22m
+[1m[31m      C:\Users\moshl\Projects\node_modules doesn't exist[39m[22m or is not a directory
+[1m[31m      C:\Users\moshl\node_modules doesn't exist[39m[22m or is not a directory
+[1m[31m      C:\Users\node_modules doesn't exist[39m[22m or is not a directory
+[1m[31m      C:\node_modules doesn't exist[39m[22m or is not a directory
+ @ ./src/main.ts 6:21-44
+
+[1m[31mERROR[39m[22m in [1m./src/app.module.ts:2:30[39m[22m
+[1mTS2307: Cannot find module '@nestjs/config' or its corresponding type declarations.
+    1 | import { Module } from '@nestjs/common';
+  > 2 | import { ConfigModule } from '@nestjs/config';
+      |                              ^^^^^^^^^^^^^^^^
+    3 | import { APP_GUARD } from '@nestjs/core';
+    4 | import * as path from 'path';
+    5 | import { AuthModule } from './auth/auth.module';[39m[22m
+
+webpack 5.97.1 compiled with [1m[31m2 errors[39m[22m in 15173 ms
+ ELIFECYCLE  Command failed with exit code 1.

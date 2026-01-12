@@ -23,7 +23,10 @@
     },
     "scheme": "chingoo",
     "plugins": [
-      "expo-router"
+      "expo-router",
+      "expo-asset",
+      "expo-font",
+      "expo-dev-client"
     ]
   }
 }

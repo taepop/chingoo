@@ -13,5 +13,17 @@
     "typescript": "^5.3.0",
     "prettier": "^3.0.0"
   },
-  "packageManager": "pnpm@9.0.0"
+  "packageManager": "pnpm@9.0.0",
+  "pnpm": {
+    "overrides": {
+      "glob": "^10.3.10",
+      "rimraf": "^5.0.5",
+      "inflight": "npm:@jsdevtools/inflight@^1.0.6",
+      "superagent": "^10.2.3",
+      "@humanwhocodes/config-array": "^0.15.0",
+      "@humanwhocodes/object-schema": "^2.0.1",
+      "@eslint/eslintrc": "^3.1.0",
+      "eslint": "^9.0.0"
+    }
+  }
 }
