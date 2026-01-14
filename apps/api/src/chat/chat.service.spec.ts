@@ -2,6 +2,8 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { ChatService } from './chat.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { TraceService } from '../trace/trace.service';
+import { RouterService } from '../router/router.service';
+import { TopicMatchService } from '../topicmatch/topicmatch.service';
 import {
   ChatRequestDto,
   UserState,
@@ -22,6 +24,8 @@ describe('ChatService', () => {
   let service: ChatService;
   let prismaService: jest.Mocked<PrismaService>;
   let traceService: jest.Mocked<TraceService>;
+  let routerService: jest.Mocked<RouterService>;
+  let topicMatchService: jest.Mocked<TopicMatchService>;
 
   const ASSISTANT_MSG_NAMESPACE = 'chingoo-assistant-message-v1';
   
@@ -65,17 +69,43 @@ describe('ChatService', () => {
       getTraceId: jest.fn().mockReturnValue('mock-trace-id'),
     };
 
+    // Q10: Mock RouterService to return deterministic routing decisions
+    const mockRouterService = {
+      route: jest.fn().mockReturnValue({
+        topic_id: null,
+        confidence: 0,
+        route: 'friend_chat',
+        pipeline: 'FRIEND_CHAT',
+        safety_policy: 'ALLOW',
+        memory_read_policy: 'FULL',
+        memory_write_policy: 'SELECTIVE',
+        vector_search_policy: 'ON_DEMAND',
+        relationship_update_policy: 'ON',
+        retrieval_query_text: null,
+        notes: null,
+      }),
+    };
+
+    // Q10: Mock TopicMatchService to return empty topic matches
+    const mockTopicMatchService = {
+      computeTopicMatches: jest.fn().mockReturnValue([]),
+    };
+
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         ChatService,
         { provide: PrismaService, useValue: mockPrismaService },
         { provide: TraceService, useValue: mockTraceService },
+        { provide: RouterService, useValue: mockRouterService },
+        { provide: TopicMatchService, useValue: mockTopicMatchService },
       ],
     }).compile();
 
     service = module.get<ChatService>(ChatService);
     prismaService = module.get(PrismaService);
     traceService = module.get(TraceService);
+    routerService = module.get(RouterService);
+    topicMatchService = module.get(TopicMatchService);
   });
 
   describe('sendMessage', () => {

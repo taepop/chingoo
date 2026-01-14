@@ -5,10 +5,20 @@ import { UserModule } from './user/user.module';
 import { ChatModule } from './chat/chat.module';
 import { PrismaModule } from './prisma/prisma.module';
 import { TraceModule } from './trace/trace.module';
+import { TopicMatchModule } from './topicmatch/topicmatch.module';
+import { RouterModule } from './router/router.module';
 import { JwtAuthGuard } from './auth/auth.guard';
 
 @Module({
-  imports: [PrismaModule, TraceModule, AuthModule, UserModule, ChatModule],
+  imports: [
+    PrismaModule,
+    TraceModule,
+    AuthModule,
+    UserModule,
+    ChatModule,
+    TopicMatchModule,
+    RouterModule,
+  ],
   providers: [
     {
       provide: APP_GUARD,

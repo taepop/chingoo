@@ -7,11 +7,14 @@ import {
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { TraceService } from '../trace/trace.service';
+import { RouterService, RouterDecision } from '../router/router.service';
+import { TopicMatchService, TopicMatchResult } from '../topicmatch/topicmatch.service';
 import {
   ChatRequestDto,
   ChatResponseDto,
   UserState,
   ApiErrorDto,
+  AgeBand,
 } from '@chingoo/shared';
 import { createHash } from 'crypto';
 import { MessageStatus, Prisma } from '@prisma/client';
@@ -23,6 +26,10 @@ import { MessageStatus, Prisma } from '@prisma/client';
  * - API_CONTRACT.md §3 (DTOs)
  * - SPEC_PATCH.md (Idempotency replay semantics, INSERT new assistant row)
  * - AI_PIPELINE.md §4.1.2 (ONBOARDING → ACTIVE atomic commit)
+ * 
+ * Q10: Integrates Router + TopicMatch for deterministic routing decisions.
+ * The routing decision is computed but the stub response generator is still used
+ * (full pipeline integration in Q11/Q12/Q13).
  * 
  * [MINIMAL DEVIATION] Deterministic assistant message ID:
  * Uses SHA-256(namespace + message_id) formatted as UUID to derive assistant message ID.
@@ -38,6 +45,8 @@ export class ChatService {
   constructor(
     private prisma: PrismaService,
     private traceService: TraceService,
+    private routerService: RouterService,
+    private topicMatchService: TopicMatchService,
   ) {}
 
   /**
@@ -104,8 +113,25 @@ export class ChatService {
       await this.validateOnboardingRequirements(userId, conversation.aiFriend);
     }
 
-    // Step 4: Process message in transaction
+    // Step 4: Build TurnPacket components and compute routing decision (Q10)
     const traceId = this.traceService.getTraceId() || crypto.randomUUID();
+    
+    // Q10: Compute text normalization and topic matches
+    const { normNoPunct, topicMatches } = this.computeTurnPacketComponents(dto.user_message);
+    
+    // Q10: Get age_band from onboarding answers for routing
+    const ageBand = await this.getAgeBandForUser(userId);
+    
+    // Q10: Compute deterministic routing decision
+    const routingDecision = this.routerService.route({
+      user_state: userState,
+      norm_no_punct: normNoPunct,
+      token_estimate: this.estimateTokenCount(dto.user_message),
+      topic_matches: topicMatches,
+      age_band: ageBand,
+    });
+
+    // Step 5: Process message in transaction (Q9 behavior unchanged)
     const result = await this.processMessageTransaction(
       userId,
       userState,
@@ -113,9 +139,83 @@ export class ChatService {
       conversation,
       traceId,
       isOnboarding,
+      routingDecision,
     );
 
     return result;
+  }
+
+  /**
+   * Compute TurnPacket components per AI_PIPELINE.md §2.1 and §5.1
+   * 
+   * Q10: Text normalization per AI_PIPELINE.md §2.8:
+   * 1) Unicode NFKC
+   * 2) strip zero-width chars
+   * 3) collapse whitespace to single spaces
+   * 4) trim leading/trailing spaces
+   * 5) lowercase ASCII letters only (do NOT lowercase non-Latin scripts)
+   * 6) remove punctuation except apostrophes for norm_no_punct
+   */
+  private computeTurnPacketComponents(userMessage: string): {
+    userTextNorm: string;
+    normNoPunct: string;
+    topicMatches: TopicMatchResult[];
+  } {
+    // Step 1-5: Normalize text
+    let normalized = userMessage
+      .normalize('NFKC')
+      .replace(/[\u200B-\u200D\uFEFF]/g, '') // Strip zero-width chars
+      .replace(/\s+/g, ' ')                    // Collapse whitespace
+      .trim();
+    
+    // Lowercase ASCII only (preserve non-Latin scripts)
+    normalized = normalized.replace(/[A-Z]/g, char => char.toLowerCase());
+    
+    const userTextNorm = normalized;
+    
+    // Step 6: Create norm_no_punct (remove punctuation except apostrophes)
+    const normNoPunct = normalized.replace(/[^\w\s'가-힣ㄱ-ㅎㅏ-ㅣ]/g, '');
+    
+    // Compute topic matches
+    const topicMatches = this.topicMatchService.computeTopicMatches(normNoPunct);
+    
+    return { userTextNorm, normNoPunct, topicMatches };
+  }
+
+  /**
+   * Get age_band for user from onboarding answers.
+   * Per AI_PIPELINE.md §6.2.1: If missing, router treats as AGE_13_17 for safety.
+   */
+  private async getAgeBandForUser(userId: string): Promise<AgeBand | null> {
+    const onboarding = await this.prisma.userOnboardingAnswers.findUnique({
+      where: { userId },
+      select: { ageBand: true },
+    });
+    
+    if (!onboarding?.ageBand) {
+      return null;
+    }
+    
+    // Map Prisma enum to shared enum
+    const ageBandMap: Record<string, AgeBand> = {
+      'AGE_13_17': AgeBand.AGE_13_17,
+      'AGE_18_24': AgeBand.AGE_18_24,
+      'AGE_25_34': AgeBand.AGE_25_34,
+      'AGE_35_44': AgeBand.AGE_35_44,
+      'AGE_45_PLUS': AgeBand.AGE_45_PLUS,
+    };
+    
+    return ageBandMap[onboarding.ageBand] ?? null;
+  }
+
+  /**
+   * Estimate token count (simple whitespace-based estimation).
+   * Per AI_PIPELINE.md §5: "Token count estimate (fast)"
+   */
+  private estimateTokenCount(text: string): number {
+    // Simple estimation: split by whitespace and multiply by ~1.3 for subword tokens
+    const words = text.trim().split(/\s+/).filter(w => w.length > 0);
+    return Math.ceil(words.length * 1.3);
   }
 
   /**
@@ -217,6 +317,9 @@ export class ChatService {
    * - INSERT user message, INSERT assistant message (SPEC_PATCH)
    * - If ONBOARDING: transition to ACTIVE atomically
    * - Rollback if any check fails
+   * 
+   * Q10: routingDecision is passed in but stub response is still used.
+   * Full pipeline integration in Q11/Q12/Q13.
    */
   private async processMessageTransaction(
     userId: string,
@@ -229,13 +332,20 @@ export class ChatService {
     },
     traceId: string,
     isOnboarding: boolean,
+    routingDecision: RouterDecision,
   ): Promise<ChatResponseDto> {
     // Derive deterministic assistant message ID
     // [MINIMAL DEVIATION] Per task requirement 3a: UUIDv5(namespace, message_id)
     const assistantMessageId = this.deriveAssistantMessageId(dto.message_id);
 
-    // Generate AI response (stub for now - full pipeline would go through orchestrator)
-    const assistantContent = this.generateAssistantResponse(dto.user_message, isOnboarding);
+    // Q10: Generate AI response (stub for now - full pipeline would use routingDecision)
+    // The routingDecision is computed deterministically but stub response is still used.
+    // Full orchestrator integration in Q11/Q12/Q13.
+    const assistantContent = this.generateAssistantResponse(
+      dto.user_message,
+      isOnboarding,
+      routingDecision,
+    );
 
     // Execute in transaction per AI_PIPELINE.md §4.1.2 Technical Implementation Note
     const result = await this.prisma.$transaction(async (tx) => {
@@ -343,16 +453,33 @@ export class ChatService {
    * Generate AI assistant response.
    * 
    * NOTE: This is a stub implementation for v0.1.
-   * Full implementation would route through:
-   * - RouterService.route(turnPacket) → RoutingDecision
-   * - OrchestratorService.execute(turnPacket, routingDecision)
+   * Q10: routingDecision is now computed by RouterService and passed in.
+   * Full implementation would route through OrchestratorService.execute()
    * Per ARCHITECTURE.md §A.2.1
+   * 
+   * Q10: The stub still returns static responses, but the routing decision
+   * can be used by Q11/Q12/Q13 for full pipeline integration.
    */
-  private generateAssistantResponse(userMessage: string, isFirstMessage: boolean): string {
-    // Stub response for v0.1 - actual LLM integration would happen here
+  private generateAssistantResponse(
+    userMessage: string,
+    isFirstMessage: boolean,
+    routingDecision: RouterDecision,
+  ): string {
+    // Stub response for v0.1 - actual LLM integration would happen in Q11/Q12/Q13
+    // The routingDecision.pipeline indicates what type of response should be generated:
+    // - ONBOARDING_CHAT, FRIEND_CHAT, EMOTIONAL_SUPPORT, INFO_QA, REFUSAL
+    
+    if (routingDecision.pipeline === 'REFUSAL') {
+      // Per AI_PIPELINE.md §6.1.1: CREATED users get refusal message
+      return 'Please complete onboarding before chatting.';
+    }
+    
     if (isFirstMessage) {
       return "Hey! It's great to meet you. I'm really happy you're here. What's on your mind?";
     }
+    
+    // Q10: For now, return simple stub responses
+    // Future Q11/Q12/Q13 will use routingDecision.pipeline to route to proper handlers
     return "I hear you! Tell me more about that.";
   }
 
