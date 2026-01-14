@@ -10,6 +10,7 @@ import { TraceService } from '../trace/trace.service';
 import { RouterService, RouterDecision, HeuristicFlags } from '../router/router.service';
 import { TopicMatchService, TopicMatchResult } from '../topicmatch/topicmatch.service';
 import { MemoryService } from '../memory/memory.service';
+import { PostProcessorService, EmojiFreq } from '../postprocessor/postprocessor.service';
 import {
   ChatRequestDto,
   ChatResponseDto,
@@ -52,6 +53,7 @@ export class ChatService {
     private routerService: RouterService,
     private topicMatchService: TopicMatchService,
     private memoryService: MemoryService,
+    private postProcessorService: PostProcessorService,
   ) {}
 
   /**
@@ -92,10 +94,17 @@ export class ChatService {
     }
 
     // Step 2: Verify conversation belongs to user
+    // Q12: Include stableStyleParams for PostProcessor emoji_freq extraction
     const conversation = await this.prisma.conversation.findUnique({
       where: { id: dto.conversation_id },
       include: {
-        aiFriend: true,
+        aiFriend: {
+          select: {
+            id: true,
+            personaTemplateId: true,
+            stableStyleParams: true, // Q12: For emoji_freq in PostProcessor
+          },
+        },
         user: {
           include: {
             onboardingAnswers: true,
@@ -403,12 +412,18 @@ export class ChatService {
    * 
    * Q10: routingDecision is passed in but stub response is still used.
    * Q11: Integrates memory extraction + surfacing + correction handling.
+   * Q12: Integrates PostProcessor BEFORE persistence per AI_PIPELINE.md §10.
    * 
    * Per SPEC_PATCH.md §6.1:
    * j. Transaction BEGIN:
    *    - INSERT assistant message with surfaced_memory_ids: [list]
    *    - MemoryService.extractAndPersist(user_text)
    *    - COMMIT
+   * 
+   * CRITICAL ORDER INVARIANT (Q12):
+   * Post-processing MUST happen BEFORE assistant message persistence.
+   * The stored assistant message content MUST be the post-processed output
+   * so idempotency replay returns the enforced version.
    */
   private async processMessageTransaction(
     userId: string,
@@ -418,6 +433,7 @@ export class ChatService {
       id: string;
       aiFriendId: string;
       user: { id: string; state: string };
+      aiFriend?: { stableStyleParams: Prisma.JsonValue | null };
     },
     traceId: string,
     isOnboarding: boolean,
@@ -454,12 +470,26 @@ export class ChatService {
     });
 
     // Generate AI response (stub for now - full pipeline would use routingDecision)
-    const assistantContent = this.generateAssistantResponse(
+    const draftContent = this.generateAssistantResponse(
       dto.user_message,
       isOnboarding,
       routingDecision,
       correctionResult,
     );
+
+    // Q12: Post-process the draft content BEFORE persistence
+    // Per AI_PIPELINE.md §10: "PostProcessor must be the final enforcement point"
+    // CRITICAL ORDER INVARIANT: This MUST happen BEFORE INSERT
+    const emojiFreq = this.getEmojiFreqFromStableStyleParams(conversation.aiFriend?.stableStyleParams);
+    const postProcessResult = await this.postProcessorService.process({
+      draftContent,
+      conversationId: dto.conversation_id,
+      emojiFreq,
+    });
+
+    // Use post-processed content and opener_norm for storage
+    const assistantContent = postProcessResult.content;
+    const openerNorm = postProcessResult.openerNorm;
 
     // Execute in transaction per AI_PIPELINE.md §4.1.2 Technical Implementation Note
     const result = await this.prisma.$transaction(async (tx) => {
@@ -503,6 +533,7 @@ export class ChatService {
 
       // 3. INSERT assistant message (SPEC_PATCH: NEW row, not update)
       // Q11: surfacedMemoryIds is now populated from memory surfacing
+      // Q12: opener_norm is computed by PostProcessor per AI_PIPELINE.md §10.2
       const assistantMessage = await tx.message.create({
         data: {
           id: assistantMessageId,
@@ -516,6 +547,7 @@ export class ChatService {
           traceId, // Same trace_id as user message per SPEC_PATCH
           surfacedMemoryIds, // Q11: Populated from memory surfacing
           extractedMemoryCandidateIds: [],
+          openerNorm, // Q12: Per AI_PIPELINE.md §10.2
         },
       });
 
@@ -681,5 +713,34 @@ export class ChatService {
   private isValidUUID(str: string): boolean {
     const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
     return uuidRegex.test(str);
+  }
+
+  /**
+   * Extract emoji_freq from StableStyleParams.
+   * 
+   * Per AI_PIPELINE.md §2.4 StableStyleParams:
+   * emoji_freq = none | light | frequent
+   * 
+   * Per AI_PIPELINE.md §10.4 Emoji Band Enforcement:
+   * Used to determine emoji limits in post-processing.
+   * 
+   * @param stableStyleParams - JSON params from ai_friends table
+   * @returns EmojiFreq value, defaults to 'light' if not specified
+   */
+  private getEmojiFreqFromStableStyleParams(
+    stableStyleParams: Prisma.JsonValue | null | undefined,
+  ): EmojiFreq {
+    if (!stableStyleParams || typeof stableStyleParams !== 'object') {
+      return 'light'; // Default per task
+    }
+
+    const params = stableStyleParams as Record<string, unknown>;
+    const emojiFreq = params.emoji_freq;
+
+    if (emojiFreq === 'none' || emojiFreq === 'light' || emojiFreq === 'frequent') {
+      return emojiFreq;
+    }
+
+    return 'light'; // Default
   }
 }

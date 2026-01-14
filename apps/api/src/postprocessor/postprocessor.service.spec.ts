@@ -1,0 +1,378 @@
+import { Test, TestingModule } from '@nestjs/testing';
+import { PostProcessorService, EmojiFreq } from './postprocessor.service';
+import { PrismaService } from '../prisma/prisma.service';
+
+/**
+ * PostProcessorService Unit Tests
+ * 
+ * TEST GATE #7 — Behavior enforcement (MANDATORY)
+ * 
+ * Tests AI_PIPELINE.md §10 (Stage F — Post-Processing & Quality Gates):
+ * - §10.2 Repeated Opener Detection
+ * - §10.3 Similarity Measure for Anti-Repetition (3-gram Jaccard)
+ * - §10.4 Emoji Band Enforcement
+ * 
+ * Per task requirement:
+ * "DETERMINISM: post-processing MUST NOT call any LLM or external service;
+ *  pure deterministic transforms only."
+ */
+describe('PostProcessorService', () => {
+  let service: PostProcessorService;
+  let prismaService: jest.Mocked<PrismaService>;
+
+  beforeEach(async () => {
+    const mockPrismaService = {
+      message: {
+        findMany: jest.fn().mockResolvedValue([]),
+      },
+    };
+
+    const module: TestingModule = await Test.createTestingModule({
+      providers: [
+        PostProcessorService,
+        { provide: PrismaService, useValue: mockPrismaService },
+      ],
+    }).compile();
+
+    service = module.get<PostProcessorService>(PostProcessorService);
+    prismaService = module.get(PrismaService);
+  });
+
+  describe('computeOpenerNorm', () => {
+    /**
+     * Per AI_PIPELINE.md §10.2:
+     * "Compute opener_norm as the first 12 tokens of the assistant message after:
+     *  1) stripping leading emojis
+     *  2) lowercasing ASCII only
+     *  3) collapsing whitespace
+     *  4) removing punctuation except apostrophes"
+     */
+    it('should strip leading emojis', () => {
+      const result = service.computeOpenerNorm('😊 Hey there, how are you doing today?');
+      expect(result).toBe("hey there how are you doing today");
+    });
+
+    it('should lowercase ASCII only (preserve Korean)', () => {
+      const result = service.computeOpenerNorm('Hey 안녕하세요 How Are You');
+      expect(result).toBe('hey 안녕하세요 how are you');
+    });
+
+    it('should collapse whitespace', () => {
+      const result = service.computeOpenerNorm('Hey   there,    how are   you?');
+      expect(result).toBe('hey there how are you');
+    });
+
+    it('should remove punctuation except apostrophes', () => {
+      const result = service.computeOpenerNorm("That's great! How's it going?");
+      expect(result).toBe("that's great how's it going");
+    });
+
+    it('should take only first 12 tokens', () => {
+      const longMessage = 'one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen';
+      const result = service.computeOpenerNorm(longMessage);
+      expect(result).toBe('one two three four five six seven eight nine ten eleven twelve');
+    });
+
+    it('should produce consistent results for same input (deterministic)', () => {
+      const input = '😊 Hey! How are you doing today? I hope everything is going well!';
+      const result1 = service.computeOpenerNorm(input);
+      const result2 = service.computeOpenerNorm(input);
+      expect(result1).toBe(result2);
+    });
+  });
+
+  describe('computeJaccardSimilarity', () => {
+    /**
+     * Per AI_PIPELINE.md §10.3:
+     * "Let G(msg) be the set of 3-grams over tokens (min 3 tokens; otherwise empty).
+     *  Jaccard = |G(a) ∩ G(b)| / |G(a) ∪ G(b)|."
+     */
+    it('should return 0 for texts with less than 3 tokens', () => {
+      const result = service.computeJaccardSimilarity('hi there', 'hello world');
+      expect(result).toBe(0);
+    });
+
+    it('should return 1.0 for identical texts', () => {
+      const text = 'hello there how are you doing today';
+      const result = service.computeJaccardSimilarity(text, text);
+      expect(result).toBe(1.0);
+    });
+
+    it('should return 0 for completely different texts', () => {
+      const text1 = 'apple banana cherry date elderberry';
+      const text2 = 'fish grape honey ice jelly';
+      const result = service.computeJaccardSimilarity(text1, text2);
+      expect(result).toBe(0);
+    });
+
+    it('should return value between 0 and 1 for partially similar texts', () => {
+      const text1 = 'hey how are you doing today';
+      const text2 = 'hey how are things going well';
+      const result = service.computeJaccardSimilarity(text1, text2);
+      expect(result).toBeGreaterThan(0);
+      expect(result).toBeLessThan(1);
+    });
+
+    it('should compute correct Jaccard for known example', () => {
+      // 3-grams of "a b c d": {"a b c", "b c d"} - 2 grams
+      // 3-grams of "a b c e": {"a b c", "b c e"} - 2 grams
+      // Intersection: {"a b c"} - 1 gram
+      // Union: {"a b c", "b c d", "b c e"} - 3 grams
+      // Jaccard = 1/3 ≈ 0.333
+      const result = service.computeJaccardSimilarity('a b c d', 'a b c e');
+      expect(result).toBeCloseTo(1/3, 2);
+    });
+  });
+
+  describe('countEmojis', () => {
+    /**
+     * Per AI_PIPELINE.md §10.4:
+     * "Define emoji_count as the count of Unicode emoji codepoints"
+     */
+    it('should count zero emojis in plain text', () => {
+      const result = service.countEmojis('Hello, how are you?');
+      expect(result).toBe(0);
+    });
+
+    it('should count single emoji', () => {
+      const result = service.countEmojis('Hello 😊');
+      expect(result).toBe(1);
+    });
+
+    it('should count multiple emojis', () => {
+      const result = service.countEmojis('Hey! 😊 How are you? 🎉 Great to see you! 👋');
+      expect(result).toBe(3);
+    });
+
+    it('should count emojis at start of text', () => {
+      const result = service.countEmojis('😊😊😊 Hello');
+      expect(result).toBe(3);
+    });
+  });
+
+  describe('process - TEST GATE #7.1: Opener similarity triggers rewrite', () => {
+    /**
+     * TEST GATE #7 Requirement 1:
+     * "Given an assistant draft whose opener violates the similarity rule against
+     *  recent openers, postprocessor rewrites opener to a compliant alternative.
+     *  Assert opener_norm is stored and differs from the violating opener_norm."
+     */
+    it('should rewrite opener when it exactly matches a recent opener_norm', async () => {
+      // The opener_norm is first 12 tokens after normalization
+      // Draft: "Hey! How are you doing today? I really hope you're well!"
+      // After normalization: "hey how are you doing today i really hope you're well"
+      // First 12 tokens: "hey how are you doing today i really hope you're well"
+      const draftContent = "Hey! How are you doing today? I really hope you're well!";
+      const violatingOpenerNorm = service.computeOpenerNorm(draftContent);
+      
+      // Mock recent messages with the SAME opener_norm (exact match)
+      (prismaService.message.findMany as jest.Mock).mockResolvedValue([
+        { content: draftContent, openerNorm: violatingOpenerNorm },
+      ]);
+
+      const result = await service.process({
+        draftContent,
+        conversationId: 'test-conv-id',
+        emojiFreq: 'light',
+      });
+
+      // Assert opener_norm differs from the violating one (rewrite happened)
+      expect(result.openerNorm).not.toBe(violatingOpenerNorm);
+      // Assert violation was detected
+      expect(result.violations).toContain('OPENER_REPETITION');
+      // Assert rewrite occurred
+      expect(result.rewriteAttempts).toBeGreaterThan(0);
+    });
+
+    it('should NOT rewrite opener when it does not match any recent opener_norm', async () => {
+      // Mock recent messages with different opener_norms
+      (prismaService.message.findMany as jest.Mock).mockResolvedValue([
+        { content: 'That sounds fun!', openerNorm: 'that sounds fun' },
+        { content: 'I understand how you feel', openerNorm: 'i understand how you feel' },
+      ]);
+
+      const result = await service.process({
+        draftContent: 'Hey! How are you doing today?',
+        conversationId: 'test-conv-id',
+        emojiFreq: 'light',
+      });
+
+      // No opener repetition violation
+      expect(result.violations).not.toContain('OPENER_REPETITION');
+    });
+  });
+
+  describe('process - TEST GATE #7.2: Emoji band enforcement', () => {
+    /**
+     * TEST GATE #7 Requirement 2:
+     * "Given persona emoji_freq constraints + an assistant draft with too many emojis,
+     *  postprocessor clamps to allowed range deterministically."
+     */
+    it('should remove all emojis when emoji_freq is "none"', async () => {
+      (prismaService.message.findMany as jest.Mock).mockResolvedValue([]);
+
+      const result = await service.process({
+        draftContent: 'Hey! 😊 How are you? 🎉 Great!',
+        conversationId: 'test-conv-id',
+        emojiFreq: 'none',
+      });
+
+      // emoji_freq=none: MUST be 0 emojis
+      const emojiCount = service.countEmojis(result.content);
+      expect(emojiCount).toBe(0);
+      expect(result.violations).toContain('EMOJI_BAND_VIOLATION');
+    });
+
+    it('should clamp to [0, 2] when emoji_freq is "light" and has more than 2 emojis', async () => {
+      (prismaService.message.findMany as jest.Mock).mockResolvedValue([]);
+
+      const result = await service.process({
+        draftContent: 'Hey! 😊😊😊😊😊 How are you?', // 5 emojis
+        conversationId: 'test-conv-id',
+        emojiFreq: 'light',
+      });
+
+      // emoji_freq=light: MUST be in [0, 2]
+      const emojiCount = service.countEmojis(result.content);
+      expect(emojiCount).toBeGreaterThanOrEqual(0);
+      expect(emojiCount).toBeLessThanOrEqual(2);
+      expect(result.violations).toContain('EMOJI_BAND_VIOLATION');
+    });
+
+    it('should clamp to [1, 6] when emoji_freq is "frequent" and has 0 emojis', async () => {
+      (prismaService.message.findMany as jest.Mock).mockResolvedValue([]);
+
+      const result = await service.process({
+        draftContent: 'Hey! How are you doing today?', // 0 emojis
+        conversationId: 'test-conv-id',
+        emojiFreq: 'frequent',
+      });
+
+      // emoji_freq=frequent: MUST be in [1, 6]
+      const emojiCount = service.countEmojis(result.content);
+      expect(emojiCount).toBeGreaterThanOrEqual(1);
+      expect(emojiCount).toBeLessThanOrEqual(6);
+      expect(result.violations).toContain('EMOJI_BAND_VIOLATION');
+    });
+
+    it('should clamp to [1, 6] when emoji_freq is "frequent" and has more than 6 emojis', async () => {
+      (prismaService.message.findMany as jest.Mock).mockResolvedValue([]);
+
+      const result = await service.process({
+        draftContent: '😊😊😊😊😊😊😊😊 Hey!', // 8 emojis
+        conversationId: 'test-conv-id',
+        emojiFreq: 'frequent',
+      });
+
+      // emoji_freq=frequent: MUST be in [1, 6]
+      const emojiCount = service.countEmojis(result.content);
+      expect(emojiCount).toBeGreaterThanOrEqual(1);
+      expect(emojiCount).toBeLessThanOrEqual(6);
+      expect(result.violations).toContain('EMOJI_BAND_VIOLATION');
+    });
+
+    it('should NOT modify content when emoji count is within band', async () => {
+      (prismaService.message.findMany as jest.Mock).mockResolvedValue([]);
+
+      const originalContent = 'Hey! 😊 How are you?'; // 1 emoji, within light [0,2]
+      const result = await service.process({
+        draftContent: originalContent,
+        conversationId: 'test-conv-id',
+        emojiFreq: 'light',
+      });
+
+      // No emoji violation
+      expect(result.violations).not.toContain('EMOJI_BAND_VIOLATION');
+    });
+  });
+
+  describe('process - Message similarity (§10.3)', () => {
+    /**
+     * Per AI_PIPELINE.md §10.3:
+     * "If similarity with ANY of the last 20 assistant messages is >= 0.70,
+     *  the response is considered repetitive and MUST be rewritten shorter
+     *  and with a different structure."
+     */
+    it('should rewrite when 3-gram Jaccard similarity >= 0.70', async () => {
+      // Mock a recent message that is very similar
+      const similarContent = 'hey there how are you doing today i hope you are well';
+      (prismaService.message.findMany as jest.Mock).mockResolvedValue([
+        { content: similarContent, openerNorm: 'hey there how are you' },
+      ]);
+
+      // Draft that is nearly identical
+      const result = await service.process({
+        draftContent: 'hey there how are you doing today i hope you are well and happy',
+        conversationId: 'test-conv-id',
+        emojiFreq: 'light',
+      });
+
+      // Should detect similarity violation
+      expect(result.violations).toContain('MESSAGE_SIMILARITY');
+      // Should rewrite to shorter/different structure
+      expect(result.rewriteAttempts).toBeGreaterThan(0);
+    });
+
+    it('should NOT rewrite when similarity is below threshold', async () => {
+      // Mock recent messages that are different
+      (prismaService.message.findMany as jest.Mock).mockResolvedValue([
+        { content: 'That movie was really interesting!', openerNorm: 'that movie was really' },
+        { content: 'I love pizza too, especially pepperoni', openerNorm: 'i love pizza too' },
+      ]);
+
+      const result = await service.process({
+        draftContent: 'Hey there! How are you doing today?',
+        conversationId: 'test-conv-id',
+        emojiFreq: 'light',
+      });
+
+      // No similarity violation
+      expect(result.violations).not.toContain('MESSAGE_SIMILARITY');
+    });
+  });
+
+  describe('Determinism guarantee', () => {
+    /**
+     * Per task requirement:
+     * "DETERMINISM: post-processing MUST NOT call any LLM or external service;
+     *  pure deterministic transforms only."
+     */
+    it('should produce identical output for identical input (deterministic)', async () => {
+      (prismaService.message.findMany as jest.Mock).mockResolvedValue([]);
+
+      const input = {
+        draftContent: 'Hey! 😊😊😊 How are you doing today?',
+        conversationId: 'test-conv-id',
+        emojiFreq: 'light' as EmojiFreq,
+      };
+
+      const result1 = await service.process(input);
+      const result2 = await service.process(input);
+
+      expect(result1.content).toBe(result2.content);
+      expect(result1.openerNorm).toBe(result2.openerNorm);
+      expect(result1.violations).toEqual(result2.violations);
+      expect(result1.rewriteAttempts).toBe(result2.rewriteAttempts);
+    });
+  });
+
+  describe('opener_norm storage', () => {
+    /**
+     * Per task requirement A:
+     * "Compute and store opener_norm on assistant messages as specified."
+     */
+    it('should return opener_norm in result for storage', async () => {
+      (prismaService.message.findMany as jest.Mock).mockResolvedValue([]);
+
+      const result = await service.process({
+        draftContent: 'Hey there! How are you doing?',
+        conversationId: 'test-conv-id',
+        emojiFreq: 'light',
+      });
+
+      expect(result.openerNorm).toBeDefined();
+      expect(typeof result.openerNorm).toBe('string');
+      expect(result.openerNorm.length).toBeGreaterThan(0);
+    });
+  });
+});

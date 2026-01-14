@@ -5,6 +5,7 @@ import { TraceService } from '../trace/trace.service';
 import { RouterService } from '../router/router.service';
 import { TopicMatchService } from '../topicmatch/topicmatch.service';
 import { MemoryService } from '../memory/memory.service';
+import { PostProcessorService } from '../postprocessor/postprocessor.service';
 import {
   ChatRequestDto,
   UserState,
@@ -21,6 +22,7 @@ import { createHash } from 'crypto';
  * - Deterministic assistant message ID generation
  * - Input validation
  * - Q11: Memory extraction + surfacing + correction targeting
+ * - Q12: PostProcessor integration + persistence order invariant
  */
 describe('ChatService', () => {
   let service: ChatService;
@@ -29,6 +31,7 @@ describe('ChatService', () => {
   let routerService: jest.Mocked<RouterService>;
   let topicMatchService: jest.Mocked<TopicMatchService>;
   let memoryService: jest.Mocked<MemoryService>;
+  let postProcessorService: jest.Mocked<PostProcessorService>;
 
   const ASSISTANT_MSG_NAMESPACE = 'chingoo-assistant-message-v1';
   
@@ -107,6 +110,19 @@ describe('ChatService', () => {
       persistMemoryCandidate: jest.fn().mockResolvedValue('mock-memory-id'),
     };
 
+    // Q12: Mock PostProcessorService
+    const mockPostProcessorService = {
+      process: jest.fn().mockResolvedValue({
+        content: 'Post-processed content',
+        openerNorm: 'post processed content',
+        violations: [],
+        rewriteAttempts: 0,
+      }),
+      computeOpenerNorm: jest.fn().mockReturnValue('test opener norm'),
+      computeJaccardSimilarity: jest.fn().mockReturnValue(0),
+      countEmojis: jest.fn().mockReturnValue(0),
+    };
+
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         ChatService,
@@ -115,6 +131,7 @@ describe('ChatService', () => {
         { provide: RouterService, useValue: mockRouterService },
         { provide: TopicMatchService, useValue: mockTopicMatchService },
         { provide: MemoryService, useValue: mockMemoryService },
+        { provide: PostProcessorService, useValue: mockPostProcessorService },
       ],
     }).compile();
 
@@ -124,6 +141,7 @@ describe('ChatService', () => {
     routerService = module.get(RouterService);
     topicMatchService = module.get(TopicMatchService);
     memoryService = module.get(MemoryService);
+    postProcessorService = module.get(PostProcessorService);
   });
 
   describe('sendMessage', () => {
@@ -304,6 +322,201 @@ describe('ChatService', () => {
         expect(result1).not.toBe(testMessageId); // Different from input
         // Verify it looks like a UUID format
         expect(result1).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+      });
+    });
+
+    /**
+     * TEST GATE #7.3: Persistence order invariant (regression safety for Q9 replay)
+     * 
+     * Per task requirement:
+     * "CRITICAL ORDER INVARIANT: post-processing MUST happen BEFORE assistant message persistence.
+     *  The stored assistant message content in DB MUST be the post-processed output
+     *  so idempotency replay returns the enforced version."
+     */
+    describe('Q12 - PostProcessor Integration', () => {
+      it('should call PostProcessor BEFORE persisting assistant message', async () => {
+        const mockCreatedAt = new Date();
+        const postProcessedContent = 'Post-processed response content';
+        const postProcessedOpenerNorm = 'post processed response content';
+
+        // No existing message (new message)
+        (prismaService.message.findUnique as jest.Mock).mockResolvedValueOnce(null);
+
+        // Conversation exists with persona
+        (prismaService.conversation.findUnique as jest.Mock).mockResolvedValueOnce({
+          id: mockConversationId,
+          userId: mockUserId,
+          aiFriendId: 'ai-friend-123',
+          aiFriend: {
+            id: 'ai-friend-123',
+            personaTemplateId: 'PT01',
+            stableStyleParams: { emoji_freq: 'light' },
+          },
+          user: {
+            id: mockUserId,
+            state: 'ACTIVE',
+            onboardingAnswers: {},
+          },
+        });
+
+        // Mock PostProcessor to return specific content
+        (postProcessorService.process as jest.Mock).mockResolvedValueOnce({
+          content: postProcessedContent,
+          openerNorm: postProcessedOpenerNorm,
+          violations: [],
+          rewriteAttempts: 0,
+        });
+
+        // Track what gets created in transaction
+        let createdAssistantContent: string | undefined;
+        let createdOpenerNorm: string | undefined;
+        (prismaService.$transaction as jest.Mock).mockImplementation(async (callback: Function) => {
+          const txMock = {
+            message: {
+              create: jest.fn().mockImplementation((args: { data: { content: string; openerNorm?: string } }) => {
+                if (args.data.content) {
+                  // This is either user or assistant message
+                  if (args.data.openerNorm !== undefined) {
+                    // Assistant message has openerNorm
+                    createdAssistantContent = args.data.content;
+                    createdOpenerNorm = args.data.openerNorm;
+                  }
+                }
+                return { id: 'mock-id', content: args.data.content, createdAt: mockCreatedAt };
+              }),
+              update: jest.fn(),
+            },
+            user: { update: jest.fn() },
+            relationship: { updateMany: jest.fn() },
+          };
+          const result = await callback(txMock);
+          return {
+            newState: 'ACTIVE',
+            assistantMessage: { id: 'mock-id', content: createdAssistantContent, createdAt: mockCreatedAt },
+          };
+        });
+
+        await service.sendMessage(mockUserId, UserState.ACTIVE, validDto);
+
+        // Assert PostProcessor was called
+        expect(postProcessorService.process).toHaveBeenCalledWith(
+          expect.objectContaining({
+            conversationId: mockConversationId,
+            emojiFreq: 'light',
+          }),
+        );
+
+        // Assert the stored content is the post-processed content
+        expect(createdAssistantContent).toBe(postProcessedContent);
+        expect(createdOpenerNorm).toBe(postProcessedOpenerNorm);
+      });
+
+      it('should store opener_norm on assistant message per AI_PIPELINE.md §10.2', async () => {
+        const mockCreatedAt = new Date();
+        const expectedOpenerNorm = 'hey how are you doing';
+
+        // No existing message
+        (prismaService.message.findUnique as jest.Mock).mockResolvedValueOnce(null);
+
+        // Conversation exists
+        (prismaService.conversation.findUnique as jest.Mock).mockResolvedValueOnce({
+          id: mockConversationId,
+          userId: mockUserId,
+          aiFriendId: 'ai-friend-123',
+          aiFriend: {
+            id: 'ai-friend-123',
+            personaTemplateId: 'PT01',
+            stableStyleParams: { emoji_freq: 'none' },
+          },
+          user: {
+            id: mockUserId,
+            state: 'ACTIVE',
+          },
+        });
+
+        // Mock PostProcessor
+        (postProcessorService.process as jest.Mock).mockResolvedValueOnce({
+          content: 'Hey! How are you doing?',
+          openerNorm: expectedOpenerNorm,
+          violations: [],
+          rewriteAttempts: 0,
+        });
+
+        let storedOpenerNorm: string | null = null;
+        (prismaService.$transaction as jest.Mock).mockImplementation(async (callback: Function) => {
+          const txMock = {
+            message: {
+              create: jest.fn().mockImplementation((args: { data: { openerNorm?: string | null } }) => {
+                if (args.data.openerNorm !== undefined) {
+                  storedOpenerNorm = args.data.openerNorm ?? null;
+                }
+                return { id: 'mock-id', content: 'test', createdAt: mockCreatedAt };
+              }),
+              update: jest.fn(),
+            },
+            user: { update: jest.fn() },
+            relationship: { updateMany: jest.fn() },
+          };
+          await callback(txMock);
+          return {
+            newState: 'ACTIVE',
+            assistantMessage: { id: 'mock-id', content: 'test', createdAt: mockCreatedAt },
+          };
+        });
+
+        await service.sendMessage(mockUserId, UserState.ACTIVE, validDto);
+
+        // Assert opener_norm was stored
+        expect(storedOpenerNorm).toBe(expectedOpenerNorm);
+      });
+
+      it('should use default emoji_freq=light when stableStyleParams is missing', async () => {
+        const mockCreatedAt = new Date();
+
+        // No existing message
+        (prismaService.message.findUnique as jest.Mock).mockResolvedValueOnce(null);
+
+        // Conversation exists WITHOUT stableStyleParams
+        (prismaService.conversation.findUnique as jest.Mock).mockResolvedValueOnce({
+          id: mockConversationId,
+          userId: mockUserId,
+          aiFriendId: 'ai-friend-123',
+          aiFriend: {
+            id: 'ai-friend-123',
+            personaTemplateId: 'PT01',
+            stableStyleParams: null, // Missing
+          },
+          user: {
+            id: mockUserId,
+            state: 'ACTIVE',
+          },
+        });
+
+        (postProcessorService.process as jest.Mock).mockResolvedValueOnce({
+          content: 'Test content',
+          openerNorm: 'test content',
+          violations: [],
+          rewriteAttempts: 0,
+        });
+
+        (prismaService.$transaction as jest.Mock).mockImplementation(async (callback: Function) => {
+          const txMock = {
+            message: { create: jest.fn().mockReturnValue({ id: 'id', content: 'c', createdAt: mockCreatedAt }), update: jest.fn() },
+            user: { update: jest.fn() },
+            relationship: { updateMany: jest.fn() },
+          };
+          await callback(txMock);
+          return { newState: 'ACTIVE', assistantMessage: { id: 'id', content: 'c', createdAt: mockCreatedAt } };
+        });
+
+        await service.sendMessage(mockUserId, UserState.ACTIVE, validDto);
+
+        // Assert PostProcessor was called with default emoji_freq='light'
+        expect(postProcessorService.process).toHaveBeenCalledWith(
+          expect.objectContaining({
+            emojiFreq: 'light',
+          }),
+        );
       });
     });
   });
