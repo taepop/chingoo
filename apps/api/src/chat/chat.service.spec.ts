@@ -4,6 +4,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { TraceService } from '../trace/trace.service';
 import { RouterService } from '../router/router.service';
 import { TopicMatchService } from '../topicmatch/topicmatch.service';
+import { MemoryService } from '../memory/memory.service';
 import {
   ChatRequestDto,
   UserState,
@@ -19,6 +20,7 @@ import { createHash } from 'crypto';
  * - ONBOARDING → ACTIVE transition validation
  * - Deterministic assistant message ID generation
  * - Input validation
+ * - Q11: Memory extraction + surfacing + correction targeting
  */
 describe('ChatService', () => {
   let service: ChatService;
@@ -26,6 +28,7 @@ describe('ChatService', () => {
   let traceService: jest.Mocked<TraceService>;
   let routerService: jest.Mocked<RouterService>;
   let topicMatchService: jest.Mocked<TopicMatchService>;
+  let memoryService: jest.Mocked<MemoryService>;
 
   const ASSISTANT_MSG_NAMESPACE = 'chingoo-assistant-message-v1';
   
@@ -91,6 +94,19 @@ describe('ChatService', () => {
       computeTopicMatches: jest.fn().mockReturnValue([]),
     };
 
+    // Q11: Mock MemoryService
+    const mockMemoryService = {
+      handleCorrection: jest.fn().mockResolvedValue({
+        invalidated_memory_ids: [],
+        needs_clarification: false,
+        suppressed_keys_added: [],
+      }),
+      selectMemoriesForSurfacing: jest.fn().mockResolvedValue([]),
+      extractAndPersist: jest.fn().mockResolvedValue([]),
+      extractMemoryCandidates: jest.fn().mockReturnValue([]),
+      persistMemoryCandidate: jest.fn().mockResolvedValue('mock-memory-id'),
+    };
+
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         ChatService,
@@ -98,6 +114,7 @@ describe('ChatService', () => {
         { provide: TraceService, useValue: mockTraceService },
         { provide: RouterService, useValue: mockRouterService },
         { provide: TopicMatchService, useValue: mockTopicMatchService },
+        { provide: MemoryService, useValue: mockMemoryService },
       ],
     }).compile();
 
@@ -106,6 +123,7 @@ describe('ChatService', () => {
     traceService = module.get(TraceService);
     routerService = module.get(RouterService);
     topicMatchService = module.get(TopicMatchService);
+    memoryService = module.get(MemoryService);
   });
 
   describe('sendMessage', () => {

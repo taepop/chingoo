@@ -5,6 +5,7 @@ import { PrismaModule } from '../prisma/prisma.module';
 import { TraceModule } from '../trace/trace.module';
 import { RouterModule } from '../router/router.module';
 import { TopicMatchModule } from '../topicmatch/topicmatch.module';
+import { MemoryModule } from '../memory/memory.module';
 
 /**
  * Chat Module
@@ -14,9 +15,10 @@ import { TopicMatchModule } from '../topicmatch/topicmatch.module';
  * - GET /chat/history
  * 
  * Q10: Integrates Router + TopicMatch for deterministic routing decisions.
+ * Q11: Integrates MemoryService for extraction + surfacing + correction targeting.
  */
 @Module({
-  imports: [PrismaModule, TraceModule, RouterModule, TopicMatchModule],
+  imports: [PrismaModule, TraceModule, RouterModule, TopicMatchModule, MemoryModule],
   controllers: [ChatController],
   providers: [ChatService],
   exports: [ChatService],

@@ -7,8 +7,9 @@ import {
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { TraceService } from '../trace/trace.service';
-import { RouterService, RouterDecision } from '../router/router.service';
+import { RouterService, RouterDecision, HeuristicFlags } from '../router/router.service';
 import { TopicMatchService, TopicMatchResult } from '../topicmatch/topicmatch.service';
+import { MemoryService } from '../memory/memory.service';
 import {
   ChatRequestDto,
   ChatResponseDto,
@@ -28,8 +29,11 @@ import { MessageStatus, Prisma } from '@prisma/client';
  * - AI_PIPELINE.md §4.1.2 (ONBOARDING → ACTIVE atomic commit)
  * 
  * Q10: Integrates Router + TopicMatch for deterministic routing decisions.
- * The routing decision is computed but the stub response generator is still used
- * (full pipeline integration in Q11/Q12/Q13).
+ * Q11: Integrates MemoryService for extraction + surfacing + correction targeting.
+ * 
+ * Per AI_PIPELINE.md §12.4 - Memory correction targeting:
+ * "A correction command MUST target memories ONLY through surfaced_memory_ids
+ * from the immediately previous assistant message."
  * 
  * [MINIMAL DEVIATION] Deterministic assistant message ID:
  * Uses SHA-256(namespace + message_id) formatted as UUID to derive assistant message ID.
@@ -47,6 +51,7 @@ export class ChatService {
     private traceService: TraceService,
     private routerService: RouterService,
     private topicMatchService: TopicMatchService,
+    private memoryService: MemoryService,
   ) {}
 
   /**
@@ -117,7 +122,8 @@ export class ChatService {
     const traceId = this.traceService.getTraceId() || crypto.randomUUID();
     
     // Q10: Compute text normalization and topic matches
-    const { normNoPunct, topicMatches } = this.computeTurnPacketComponents(dto.user_message);
+    // Q11: Also compute heuristic flags for memory extraction
+    const { normNoPunct, topicMatches, heuristicFlags } = this.computeTurnPacketComponents(dto.user_message);
     
     // Q10: Get age_band from onboarding answers for routing
     const ageBand = await this.getAgeBandForUser(userId);
@@ -132,6 +138,7 @@ export class ChatService {
     });
 
     // Step 5: Process message in transaction (Q9 behavior unchanged)
+    // Q11: Now includes memory extraction + surfacing + correction handling
     const result = await this.processMessageTransaction(
       userId,
       userState,
@@ -140,6 +147,9 @@ export class ChatService {
       traceId,
       isOnboarding,
       routingDecision,
+      normNoPunct,
+      heuristicFlags,
+      topicMatches,
     );
 
     return result;
@@ -155,11 +165,14 @@ export class ChatService {
    * 4) trim leading/trailing spaces
    * 5) lowercase ASCII letters only (do NOT lowercase non-Latin scripts)
    * 6) remove punctuation except apostrophes for norm_no_punct
+   * 
+   * Q11: Also computes heuristic flags for memory extraction triggers.
    */
   private computeTurnPacketComponents(userMessage: string): {
     userTextNorm: string;
     normNoPunct: string;
     topicMatches: TopicMatchResult[];
+    heuristicFlags: HeuristicFlags;
   } {
     // Step 1-5: Normalize text
     let normalized = userMessage
@@ -179,7 +192,77 @@ export class ChatService {
     // Compute topic matches
     const topicMatches = this.topicMatchService.computeTopicMatches(normNoPunct);
     
-    return { userTextNorm, normNoPunct, topicMatches };
+    // Q11: Compute heuristic flags for memory extraction
+    const heuristicFlags = this.computeHeuristicFlags(normNoPunct);
+    
+    return { userTextNorm, normNoPunct, topicMatches, heuristicFlags };
+  }
+
+  /**
+   * Compute heuristic flags from normalized text.
+   * Per AI_PIPELINE.md §5 - Preprocess triggers for memory extraction.
+   * Per AI_PIPELINE.md §6.5 - Intent routing flags.
+   */
+  private computeHeuristicFlags(normNoPunct: string): HeuristicFlags {
+    const textLower = normNoPunct.toLowerCase();
+
+    // Preference patterns per AI_PIPELINE.md §5
+    const has_preference_trigger = ['i like', 'i love', 'i hate', 'my favorite'].some(
+      p => textLower.includes(p)
+    );
+
+    // Fact patterns per AI_PIPELINE.md §5
+    const has_fact_trigger = ["i'm from", 'im from', 'i live in', 'my job is', "i'm a", 'im a'].some(
+      p => textLower.includes(p)
+    );
+
+    // Event patterns per AI_PIPELINE.md §5
+    const has_event_trigger = ['i broke up', 'my exam', "i'm traveling", 'im traveling', 'interview'].some(
+      p => textLower.includes(p)
+    );
+
+    // Correction patterns per AI_PIPELINE.md §5
+    const has_correction_trigger = [
+      "that's not true", 'thats not true', "don't remember that", 'dont remember that',
+      "don't bring this topic up again", 'dont bring this topic up again',
+      'not true', 'wrong', 'forget that',
+    ].some(p => textLower.includes(p));
+
+    // Question detection per AI_PIPELINE.md §6.5
+    const questionStarters = ['what', 'why', 'how', 'when', 'where', 'explain', 'define'];
+    const words = textLower.split(/\s+/);
+    const is_question = textLower.includes('?') || 
+      (words.length > 0 && questionStarters.includes(words[0])) ||
+      textLower.includes('how do i');
+
+    // Personal pronoun detection per AI_PIPELINE.md §6.5
+    const has_personal_pronoun = ['i ', "i'm", 'im ', 'my ', 'me '].some(
+      p => textLower.includes(p)
+    );
+
+    // Distress detection per AI_PIPELINE.md §6.5
+    const distressKeywords = [
+      "i can't", 'i feel hopeless', "i'm panicking", "i'm so anxious",
+      "i'm depressed", 'overwhelmed', 'so stressed', 'i hate myself',
+      'nothing matters', 'i want to disappear',
+      '우울', '불안', '공황', '힘들어', '죽고싶',
+    ];
+    const has_distress = distressKeywords.some(kw => textLower.includes(kw.toLowerCase()));
+
+    // Comfort request detection per AI_PIPELINE.md §6.5
+    const comfortKeywords = ['can you stay', 'talk to me', 'i need someone', 'please help me calm down', '위로'];
+    const asks_for_comfort = comfortKeywords.some(kw => textLower.includes(kw.toLowerCase()));
+
+    return {
+      has_preference_trigger,
+      has_fact_trigger,
+      has_event_trigger,
+      has_correction_trigger,
+      is_question,
+      has_personal_pronoun,
+      has_distress,
+      asks_for_comfort,
+    };
   }
 
   /**
@@ -319,7 +402,13 @@ export class ChatService {
    * - Rollback if any check fails
    * 
    * Q10: routingDecision is passed in but stub response is still used.
-   * Full pipeline integration in Q11/Q12/Q13.
+   * Q11: Integrates memory extraction + surfacing + correction handling.
+   * 
+   * Per SPEC_PATCH.md §6.1:
+   * j. Transaction BEGIN:
+   *    - INSERT assistant message with surfaced_memory_ids: [list]
+   *    - MemoryService.extractAndPersist(user_text)
+   *    - COMMIT
    */
   private async processMessageTransaction(
     userId: string,
@@ -333,23 +422,48 @@ export class ChatService {
     traceId: string,
     isOnboarding: boolean,
     routingDecision: RouterDecision,
+    normNoPunct: string,
+    heuristicFlags: HeuristicFlags,
+    topicMatches: TopicMatchResult[],
   ): Promise<ChatResponseDto> {
     // Derive deterministic assistant message ID
     // [MINIMAL DEVIATION] Per task requirement 3a: UUIDv5(namespace, message_id)
     const assistantMessageId = this.deriveAssistantMessageId(dto.message_id);
 
-    // Q10: Generate AI response (stub for now - full pipeline would use routingDecision)
-    // The routingDecision is computed deterministically but stub response is still used.
-    // Full orchestrator integration in Q11/Q12/Q13.
+    // Q11: Handle correction targeting BEFORE generating response
+    // Per AI_PIPELINE.md §12.4: Correction targets surfaced_memory_ids from previous assistant message
+    let correctionResult = null;
+    if (heuristicFlags.has_correction_trigger) {
+      correctionResult = await this.memoryService.handleCorrection({
+        userId,
+        aiFriendId: conversation.aiFriendId,
+        conversationId: dto.conversation_id,
+        normNoPunct,
+        heuristicFlags,
+      });
+    }
+
+    // Q11: Select memories for surfacing
+    // Per AI_PIPELINE.md §12.4: "Each assistant message must store surfaced_memory_ids"
+    // Per task requirement: "If no memories are relevant, surfaced_memory_ids must be [] (empty array), not null"
+    const surfacedMemoryIds = await this.memoryService.selectMemoriesForSurfacing({
+      userId,
+      aiFriendId: conversation.aiFriendId,
+      userMessage: dto.user_message,
+      topicMatches,
+    });
+
+    // Generate AI response (stub for now - full pipeline would use routingDecision)
     const assistantContent = this.generateAssistantResponse(
       dto.user_message,
       isOnboarding,
       routingDecision,
+      correctionResult,
     );
 
     // Execute in transaction per AI_PIPELINE.md §4.1.2 Technical Implementation Note
     const result = await this.prisma.$transaction(async (tx) => {
-      // 1. INSERT user message with status RECEIVED, then update to COMPLETED
+      // 1. INSERT user message with status RECEIVED
       await tx.message.create({
         data: {
           id: dto.message_id,
@@ -362,7 +476,7 @@ export class ChatService {
           source: 'chat',
           traceId,
           surfacedMemoryIds: [],
-          extractedMemoryCandidateIds: [],
+          extractedMemoryCandidateIds: [], // Will be updated after extraction
         },
       });
 
@@ -388,6 +502,7 @@ export class ChatService {
       }
 
       // 3. INSERT assistant message (SPEC_PATCH: NEW row, not update)
+      // Q11: surfacedMemoryIds is now populated from memory surfacing
       const assistantMessage = await tx.message.create({
         data: {
           id: assistantMessageId,
@@ -399,7 +514,7 @@ export class ChatService {
           status: 'COMPLETED',
           source: 'chat',
           traceId, // Same trace_id as user message per SPEC_PATCH
-          surfacedMemoryIds: [], // Empty for now per task requirement
+          surfacedMemoryIds, // Q11: Populated from memory surfacing
           extractedMemoryCandidateIds: [],
         },
       });
@@ -415,6 +530,28 @@ export class ChatService {
         assistantMessage,
       };
     });
+
+    // Q11: Memory extraction AFTER transaction (per SPEC_PATCH.md)
+    // Per AI_PIPELINE.md §12.2: "Run heuristic extractor always"
+    // Only extract if memory_write_policy is SELECTIVE
+    if (routingDecision.memory_write_policy === 'SELECTIVE') {
+      const extractedIds = await this.memoryService.extractAndPersist({
+        userId,
+        aiFriendId: conversation.aiFriendId,
+        messageId: dto.message_id,
+        userMessage: dto.user_message,
+        normNoPunct,
+        heuristicFlags,
+      });
+
+      // Update user message with extracted memory IDs
+      if (extractedIds.length > 0) {
+        await this.prisma.message.update({
+          where: { id: dto.message_id },
+          data: { extractedMemoryCandidateIds: extractedIds },
+        });
+      }
+    }
 
     return {
       message_id: dto.message_id,
@@ -454,18 +591,20 @@ export class ChatService {
    * 
    * NOTE: This is a stub implementation for v0.1.
    * Q10: routingDecision is now computed by RouterService and passed in.
+   * Q11: Handles correction result for appropriate response.
    * Full implementation would route through OrchestratorService.execute()
    * Per ARCHITECTURE.md §A.2.1
    * 
    * Q10: The stub still returns static responses, but the routing decision
-   * can be used by Q11/Q12/Q13 for full pipeline integration.
+   * can be used by Q12/Q13 for full pipeline integration.
    */
   private generateAssistantResponse(
     userMessage: string,
     isFirstMessage: boolean,
     routingDecision: RouterDecision,
+    correctionResult?: { invalidated_memory_ids: string[]; needs_clarification: boolean } | null,
   ): string {
-    // Stub response for v0.1 - actual LLM integration would happen in Q11/Q12/Q13
+    // Stub response for v0.1 - actual LLM integration would happen in Q12/Q13
     // The routingDecision.pipeline indicates what type of response should be generated:
     // - ONBOARDING_CHAT, FRIEND_CHAT, EMOTIONAL_SUPPORT, INFO_QA, REFUSAL
     
@@ -473,13 +612,24 @@ export class ChatService {
       // Per AI_PIPELINE.md §6.1.1: CREATED users get refusal message
       return 'Please complete onboarding before chatting.';
     }
+
+    // Q11: Handle correction responses
+    // Per AI_PIPELINE.md §12.4: If surfaced_memory_ids is empty, ask for clarification
+    if (correctionResult) {
+      if (correctionResult.needs_clarification) {
+        return "I'm not sure which part you mean. Could you tell me what specifically is wrong?";
+      }
+      if (correctionResult.invalidated_memory_ids.length > 0) {
+        return "Got it, I'll update what I remember. Thanks for letting me know!";
+      }
+    }
     
     if (isFirstMessage) {
       return "Hey! It's great to meet you. I'm really happy you're here. What's on your mind?";
     }
     
     // Q10: For now, return simple stub responses
-    // Future Q11/Q12/Q13 will use routingDecision.pipeline to route to proper handlers
+    // Future Q12/Q13 will use routingDecision.pipeline to route to proper handlers
     return "I hear you! Tell me more about that.";
   }
 
