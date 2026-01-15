@@ -26,16 +26,19 @@ export default function LoginScreen() {
 
     setLoading(true);
     try {
-      // Call /auth/login endpoint
-      const response = await api.login(identityToken);
+      // Step 1: Call POST /auth/login with AuthRequestDto { identity_token }
+      const authResponse = await api.login(identityToken);
 
-      // Persist token
-      await tokenStorage.saveToken(response.access_token);
+      // Step 2: Persist access_token from AuthResponseDto
+      await tokenStorage.saveToken(authResponse.access_token);
 
-      // Navigate based on user state
-      if (response.state === UserState.CREATED || response.state === UserState.ONBOARDING) {
+      // Step 3: Call GET /user/me to verify token and get current user state
+      const userProfile = await api.getMe(authResponse.access_token);
+
+      // Step 4: Navigate based on UserProfileResponseDto.state
+      if (userProfile.state === UserState.CREATED || userProfile.state === UserState.ONBOARDING) {
         router.replace('/(onboarding)');
-      } else if (response.state === UserState.ACTIVE) {
+      } else if (userProfile.state === UserState.ACTIVE) {
         router.replace('/(chat)');
       }
     } catch (error) {
