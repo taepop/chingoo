@@ -22,11 +22,16 @@ import {
 const API_BASE_URL =
   process.env.EXPO_PUBLIC_API_URL || 'http://10.0.2.2:3000';
 
+/**
+ * API Error class matching ApiErrorDto from API_CONTRACT.md
+ * Includes optional constraints array for validation errors (400)
+ */
 class ApiError extends Error {
   constructor(
     public statusCode: number,
     public message: string,
     public error: string,
+    public constraints?: string[],
   ) {
     super(message);
     this.name = 'ApiError';
@@ -58,6 +63,7 @@ async function fetchWithAuth<T>(
       errorData.statusCode || response.status,
       errorData.message || response.statusText,
       errorData.error || 'Unknown error',
+      errorData.constraints, // Pass constraints for validation errors (400)
     );
   }
 
