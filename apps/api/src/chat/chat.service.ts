@@ -13,6 +13,7 @@ import { TopicMatchService, TopicMatchResult } from '../topicmatch/topicmatch.se
 import { MemoryService } from '../memory/memory.service';
 import { PostProcessorService, EmojiFreq } from '../postprocessor/postprocessor.service';
 import { LlmService, LlmGenerationContext } from '../llm/llm.service';
+import { RelationshipService } from '../relationship/relationship.service';
 import {
   ChatRequestDto,
   ChatResponseDto,
@@ -57,6 +58,7 @@ export class ChatService {
     private memoryService: MemoryService,
     private postProcessorService: PostProcessorService,
     private llmService: LlmService,
+    private relationshipService: RelationshipService,
   ) {}
 
   /**
@@ -626,6 +628,21 @@ export class ChatService {
           data: { extractedMemoryCandidateIds: extractedIds },
         });
       }
+    }
+
+    // Q14: Relationship update per AI_PIPELINE.md §11
+    // Only update if relationship_update_policy is 'ON'
+    if (routingDecision.relationship_update_policy === 'ON') {
+      // Check if the previous AI message was a question (for meaningful response detection)
+      const wasAiQuestion = await this.relationshipService.wasLastAiMessageQuestion(dto.conversation_id);
+      
+      await this.relationshipService.updateAfterMessage({
+        userId,
+        aiFriendId: conversation.aiFriendId,
+        userMessage: dto.user_message,
+        heuristicFlags,
+        wasAiQuestion,
+      });
     }
 
     return {
