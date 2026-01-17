@@ -4,6 +4,7 @@ import { FastifyAdapter } from '@nestjs/platform-fastify';
 import request from 'supertest';
 import { AppModule } from '../src/app.module';
 import { PrismaService } from '../src/prisma/prisma.service';
+import { LlmService } from '../src/llm/llm.service';
 import {
   UserState,
   ChatRequestDto,
@@ -15,6 +16,24 @@ import {
   ApiErrorDto,
 } from '@chingoo/shared';
 import * as jwt from 'jsonwebtoken';
+
+/**
+ * Mock LLM Service for E2E tests
+ * 
+ * Per task requirement: "For tests, mock the LLM call so CI is deterministic (no network calls during tests)"
+ */
+class MockLlmService {
+  async generate(context: { isFirstMessage?: boolean; pipeline?: string }): Promise<string> {
+    // Deterministic responses for testing
+    if (context.pipeline === 'REFUSAL') {
+      return 'Please complete onboarding before chatting.';
+    }
+    if (context.isFirstMessage) {
+      return "Hey! It's great to meet you. I'm really happy you're here. What's on your mind?";
+    }
+    return "I hear you! That's really interesting. Tell me more about that.";
+  }
+}
 
 /**
  * Chat E2E Tests for POST /chat/send
@@ -39,9 +58,13 @@ describe('Chat E2E (POST /chat/send)', () => {
       process.env.DATABASE_URL = 'postgresql://chingoo:chingoo@localhost:5432/chingoo';
     }
 
+    // Q13: Override LlmService with mock to avoid network calls in CI
     const moduleFixture: TestingModule = await Test.createTestingModule({
       imports: [AppModule],
-    }).compile();
+    })
+      .overrideProvider(LlmService)
+      .useClass(MockLlmService)
+      .compile();
 
     app = moduleFixture.createNestApplication(new FastifyAdapter());
     prisma = moduleFixture.get<PrismaService>(PrismaService);
@@ -448,12 +471,27 @@ describe('Chat E2E (POST /chat/send)', () => {
   /**
    * TEST E: ONBOARDING failure rollback
    * Missing required onboarding causes rollback (no orphan rows, no state change).
+   * 
+   * Per AI_PIPELINE.md §3.1: Persona is now assigned during onboarding.
+   * To test rollback, we must directly modify the DB to simulate missing persona.
    */
   describe('E) ONBOARDING failure rollback', () => {
-    it('should rollback if persona is not assigned (no orphan messages)', async () => {
+    it('should rollback if stableStyleParams is not assigned (no orphan messages)', async () => {
       const { token, userId } = await setupUser('chat-test-e-sub');
       const conversationId = await completeOnboarding(token);
-      // Note: NOT calling assignPersona() - persona is missing
+      
+      // Per AI_PIPELINE.md §3.1: Persona is now assigned during completeOnboarding.
+      // To test the rollback case, we must directly unset stableStyleParams in DB.
+      const aiFriend = await prisma.aiFriend.findFirst({
+        where: { userId },
+      });
+      expect(aiFriend).not.toBeNull();
+      
+      // Simulate missing persona by unsetting stableStyleParams
+      await prisma.aiFriend.update({
+        where: { id: aiFriend!.id },
+        data: { stableStyleParams: null },
+      });
 
       // Verify user is ONBOARDING
       const userBefore = await prisma.user.findUnique({ where: { id: userId } });
@@ -463,19 +501,19 @@ describe('Chat E2E (POST /chat/send)', () => {
       const chatDto: ChatRequestDto = {
         message_id: messageId,
         conversation_id: conversationId,
-        user_message: 'This should fail because persona is missing',
+        user_message: 'This should fail because stableStyleParams is missing',
         local_timestamp: new Date().toISOString(),
         user_timezone: 'America/New_York',
       };
 
-      // Should return error (403 or 400) indicating missing persona
+      // Should return error (403) indicating missing persona
       const response = await request(app.getHttpServer())
         .post('/chat/send')
         .set('Authorization', `Bearer ${token}`)
         .send(chatDto);
 
-      // Expect failure (could be 400 or 403 depending on implementation)
-      expect([400, 403]).toContain(response.status);
+      // Expect failure (403 Forbidden for missing persona)
+      expect(response.status).toBe(403);
 
       // Verify NO orphan message rows created
       const messages = await prisma.message.findMany({

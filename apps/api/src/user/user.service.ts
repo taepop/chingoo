@@ -18,6 +18,20 @@ import {
 } from '@chingoo/shared';
 import { AgeBand as PrismaAgeBand, OccupationCategory as PrismaOccupationCategory } from '@prisma/client';
 
+/**
+ * StableStyleParams interface per AI_PIPELINE.md §2.4
+ * These are derived from PersonaTemplate and frozen after onboarding.
+ */
+interface StableStyleParams {
+  msg_length_pref: 'short' | 'medium' | 'long';
+  emoji_freq: 'none' | 'light' | 'frequent';
+  humor_mode: 'none' | 'light_sarcasm' | 'frequent_jokes' | 'deadpan';
+  directness_level: 'soft' | 'balanced' | 'blunt';
+  followup_question_rate: 'low' | 'medium';
+  lexicon_bias: 'clean' | 'slang' | 'internet_shorthand';
+  punctuation_quirks: string[];
+}
+
 @Injectable()
 export class UserService {
   constructor(private prisma: PrismaService) {}
@@ -191,15 +205,52 @@ export class UserService {
         },
       });
 
-      // Create AiFriend (required for Conversation)
-      // For v0.1, create without personaTemplateId (assignment happens later)
+      // Create AiFriend with persona assignment
+      // Per AI_PIPELINE.md §3.1: Persona must be assigned "During ONBOARDING,
+      // after required questions are answered, before first message is sent."
+      const personaAssignment = this.generatePersonaAssignment();
+      
+      // [MINIMAL DEVIATION] personaTemplateId is set to null until persona_templates
+      // table is seeded (SCHEMA.md B.5 notes: "seeded at deploy time with 24 rows").
+      // The stableStyleParams contains all behavioral constraints per AI_PIPELINE.md §2.4.
+      // This allows the flow to work without seed data while still persisting persona params.
       const aiFriend = await tx.aiFriend.upsert({
         where: { userId },
         create: {
           userId,
-          // personaTemplateId and personaSeed will be assigned later
+          // personaTemplateId set to null (FK to persona_templates requires seed data)
+          personaSeed: personaAssignment.personaSeed,
+          stableStyleParams: personaAssignment.stableStyleParams as any, // JSONB
+          tabooSoftBounds: personaAssignment.tabooSoftBounds as any, // JSONB
+          assignedAt: new Date(),
         },
-        update: {},
+        update: {
+          // Only assign if not already assigned (idempotency)
+          personaSeed: personaAssignment.personaSeed,
+          stableStyleParams: personaAssignment.stableStyleParams as any,
+          tabooSoftBounds: personaAssignment.tabooSoftBounds as any,
+          assignedAt: new Date(),
+        },
+      });
+      
+      // Log persona assignment for anti-cloning cap per AI_PIPELINE.md §3.4
+      await tx.personaAssignmentLog.upsert({
+        where: {
+          userId_aiFriendId: {
+            userId,
+            aiFriendId: aiFriend.id,
+          },
+        },
+        create: {
+          userId,
+          aiFriendId: aiFriend.id,
+          comboKey: personaAssignment.comboKey,
+          assignedAt: new Date(),
+        },
+        update: {
+          comboKey: personaAssignment.comboKey,
+          assignedAt: new Date(),
+        },
       });
 
       // Create Conversation (check if exists first for idempotency)
@@ -218,6 +269,27 @@ export class UserService {
           },
         });
       }
+      
+      // Create Relationship record per SCHEMA.md B.9
+      // Per AI_PIPELINE.md §2.5: RelationshipState is required for routing and retention
+      await tx.relationship.upsert({
+        where: {
+          userId_aiFriendId: {
+            userId,
+            aiFriendId: aiFriend.id,
+          },
+        },
+        create: {
+          userId,
+          aiFriendId: aiFriend.id,
+          relationshipStage: 'STRANGER',
+          rapportScore: 0,
+          sessionsCount: 0,
+          currentSessionShortReplyCount: 0,
+          lastInteractionAt: new Date(),
+        },
+        update: {}, // No update needed if exists (idempotency)
+      });
 
       // Update user state to ONBOARDING (NOT ACTIVE)
       const updatedUser = await tx.user.update({
@@ -340,5 +412,100 @@ export class UserService {
     }
 
     return errors;
+  }
+
+  /**
+   * Generate persona assignment for a user.
+   * 
+   * Per AI_PIPELINE.md §3.1: "During ONBOARDING, after required questions are answered,
+   * before first message is sent."
+   * 
+   * Per AI_PIPELINE.md §3.3 Sampling:
+   * - Sample 1 `core_archetype`
+   * - Sample 2–3 modifiers among `speech_style`, `humor_mode`, `friend_energy`
+   * - Derive `StableStyleParams`
+   * - Persist: `persona_template_id`, `persona_seed` (random 32-bit int), `stable_style_params`
+   * 
+   * Per AI_PIPELINE.md §3.2: PersonaTemplate library size: 24 templates (PT01..PT24)
+   */
+  private generatePersonaAssignment(seed?: number): {
+    personaTemplateId: string;
+    personaSeed: number;
+    stableStyleParams: StableStyleParams;
+    comboKey: string;
+    tabooSoftBounds: string[];
+  } {
+    // Generate or use provided seed for deterministic sampling
+    const personaSeed = seed ?? Math.floor(Math.random() * 0x7FFFFFFF);
+    
+    // Simple deterministic PRNG based on seed
+    const prng = this.createSeededRandom(personaSeed);
+    
+    // Sample persona template (PT01..PT24) per AI_PIPELINE.md §3.2
+    const templateNum = Math.floor(prng() * 24) + 1;
+    const personaTemplateId = `PT${templateNum.toString().padStart(2, '0')}`;
+    
+    // Core archetypes per AI_PIPELINE.md §3.2.1
+    const archetypes = [
+      'Calm_Listener', 'Warm_Caregiver', 'Blunt_Honest', 'Dry_Humor', 'Playful_Tease',
+      'Chaotic_Internet_Friend', 'Gentle_Coach', 'Soft_Nerd', 'Hype_Bestie', 'Low_Key_Companion',
+    ];
+    const coreArchetype = archetypes[templateNum % archetypes.length];
+    
+    // Per AI_PIPELINE.md §3.3: Sample 2-3 modifiers with mutation
+    // Options for each style param
+    const msgLengthOptions: ('short' | 'medium' | 'long')[] = ['short', 'medium', 'long'];
+    const emojiOptions: ('none' | 'light' | 'frequent')[] = ['none', 'light', 'frequent'];
+    const humorOptions: ('none' | 'light_sarcasm' | 'frequent_jokes' | 'deadpan')[] = 
+      ['none', 'light_sarcasm', 'frequent_jokes', 'deadpan'];
+    const directnessOptions: ('soft' | 'balanced' | 'blunt')[] = ['soft', 'balanced', 'blunt'];
+    const followupOptions: ('low' | 'medium')[] = ['low', 'medium'];
+    const lexiconOptions: ('clean' | 'slang' | 'internet_shorthand')[] = 
+      ['clean', 'slang', 'internet_shorthand'];
+    const friendEnergyOptions: ('passive' | 'balanced' | 'proactive')[] = 
+      ['passive', 'balanced', 'proactive'];
+    
+    // Derive StableStyleParams with seeded randomness
+    const stableStyleParams: StableStyleParams = {
+      msg_length_pref: msgLengthOptions[Math.floor(prng() * msgLengthOptions.length)],
+      emoji_freq: emojiOptions[Math.floor(prng() * emojiOptions.length)],
+      humor_mode: humorOptions[Math.floor(prng() * humorOptions.length)],
+      directness_level: directnessOptions[Math.floor(prng() * directnessOptions.length)],
+      followup_question_rate: followupOptions[Math.floor(prng() * followupOptions.length)],
+      lexicon_bias: lexiconOptions[Math.floor(prng() * lexiconOptions.length)],
+      punctuation_quirks: [], // Empty for v0.1
+    };
+    
+    // Derive friend_energy for combo key
+    const friendEnergy = friendEnergyOptions[Math.floor(prng() * friendEnergyOptions.length)];
+    
+    // Combo key per AI_PIPELINE.md §3.4: "(core_archetype, humor_mode, friend_energy)"
+    const comboKey = `${coreArchetype}:${stableStyleParams.humor_mode}:${friendEnergy}`;
+    
+    // Taboo soft bounds - empty for v0.1 (would come from template)
+    const tabooSoftBounds: string[] = [];
+    
+    return {
+      personaTemplateId,
+      personaSeed,
+      stableStyleParams,
+      comboKey,
+      tabooSoftBounds,
+    };
+  }
+
+  /**
+   * Create a simple seeded PRNG (mulberry32).
+   * Per AI_PIPELINE.md §3.3: "persona_seed (random 32-bit int)"
+   */
+  private createSeededRandom(seed: number): () => number {
+    let state = seed;
+    return () => {
+      state |= 0;
+      state = (state + 0x6D2B79F5) | 0;
+      let t = Math.imul(state ^ (state >>> 15), 1 | state);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
   }
 }

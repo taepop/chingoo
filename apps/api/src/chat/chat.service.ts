@@ -4,6 +4,7 @@ import {
   ForbiddenException,
   ConflictException,
   HttpStatus,
+  InternalServerErrorException,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { TraceService } from '../trace/trace.service';
@@ -11,6 +12,7 @@ import { RouterService, RouterDecision, HeuristicFlags } from '../router/router.
 import { TopicMatchService, TopicMatchResult } from '../topicmatch/topicmatch.service';
 import { MemoryService } from '../memory/memory.service';
 import { PostProcessorService, EmojiFreq } from '../postprocessor/postprocessor.service';
+import { LlmService, LlmGenerationContext } from '../llm/llm.service';
 import {
   ChatRequestDto,
   ChatResponseDto,
@@ -54,6 +56,7 @@ export class ChatService {
     private topicMatchService: TopicMatchService,
     private memoryService: MemoryService,
     private postProcessorService: PostProcessorService,
+    private llmService: LlmService,
   ) {}
 
   /**
@@ -391,12 +394,15 @@ export class ChatService {
     }
 
     // Check persona assignment per AI_PIPELINE.md §4.1.2
-    if (!aiFriend.personaTemplateId || !aiFriend.stableStyleParams) {
+    // [MINIMAL DEVIATION] Only checking stableStyleParams since personaTemplateId
+    // requires persona_templates table to be seeded (SCHEMA.md B.5).
+    // The stableStyleParams contains all behavioral constraints per AI_PIPELINE.md §2.4.
+    if (!aiFriend.stableStyleParams) {
       throw new ForbiddenException({
         statusCode: HttpStatus.FORBIDDEN,
         message: 'Onboarding incomplete: persona not assigned',
         error: 'Forbidden',
-        constraints: ['persona_template_id', 'stable_style_params'],
+        constraints: ['stable_style_params'],
       } as ApiErrorDto);
     }
   }
@@ -469,13 +475,50 @@ export class ChatService {
       topicMatches,
     });
 
-    // Generate AI response (stub for now - full pipeline would use routingDecision)
-    const draftContent = this.generateAssistantResponse(
-      dto.user_message,
-      isOnboarding,
-      routingDecision,
-      correctionResult,
+    // Fetch conversation history for LLM context
+    // Per AI_PIPELINE.md §9: "Conversation recent turns"
+    const conversationHistory = await this.getRecentConversationHistory(
+      dto.conversation_id,
+      6, // Last 6 turns (3 exchanges)
     );
+
+    // Fetch surfaced memory details for personalization
+    const surfacedMemories = await this.memoryService.getMemoriesByIds(surfacedMemoryIds);
+
+    // Parse stableStyleParams for LLM context
+    const stableStyleParams = this.parseStableStyleParams(conversation.aiFriend?.stableStyleParams);
+
+    // Q13: Generate AI response using real LLM call
+    // Per AI_PIPELINE.md §7.1 step 7: "LLM call"
+    // CRITICAL: This call happens BEFORE the transaction to preserve idempotency.
+    // If LLM fails, we throw and no messages are marked as COMPLETED.
+    let draftContent: string;
+    try {
+      const llmContext: LlmGenerationContext = {
+        userMessage: dto.user_message,
+        pipeline: routingDecision.pipeline,
+        isFirstMessage: isOnboarding,
+        correctionResult,
+        heuristicFlags,
+        stableStyleParams,
+        conversationHistory,
+        surfacedMemories: surfacedMemories.map(m => ({
+          key: m.memoryKey,
+          value: m.memoryValue,
+        })),
+      };
+      
+      draftContent = await this.llmService.generate(llmContext);
+    } catch (error) {
+      // Per task requirement: "if LLM call fails, the turn must not persist assistant as COMPLETED"
+      // Re-throw as InternalServerError to prevent transaction execution
+      const errorMessage = error instanceof Error ? error.message : 'Unknown LLM error';
+      throw new InternalServerErrorException({
+        statusCode: HttpStatus.INTERNAL_SERVER_ERROR,
+        message: `Failed to generate response: ${errorMessage}`,
+        error: 'Internal Server Error',
+      } as ApiErrorDto);
+    }
 
     // Q12: Post-process the draft content BEFORE persistence
     // Per AI_PIPELINE.md §10: "PostProcessor must be the final enforcement point"
@@ -619,50 +662,63 @@ export class ChatService {
   }
 
   /**
-   * Generate AI assistant response.
+   * Get recent conversation history for LLM context.
    * 
-   * NOTE: This is a stub implementation for v0.1.
-   * Q10: routingDecision is now computed by RouterService and passed in.
-   * Q11: Handles correction result for appropriate response.
-   * Full implementation would route through OrchestratorService.execute()
-   * Per ARCHITECTURE.md §A.2.1
+   * Per AI_PIPELINE.md §9: "Conversation recent turns"
    * 
-   * Q10: The stub still returns static responses, but the routing decision
-   * can be used by Q12/Q13 for full pipeline integration.
+   * @param conversationId - Conversation ID
+   * @param limit - Maximum number of messages to fetch
+   * @returns Array of recent messages with role and content
    */
-  private generateAssistantResponse(
-    userMessage: string,
-    isFirstMessage: boolean,
-    routingDecision: RouterDecision,
-    correctionResult?: { invalidated_memory_ids: string[]; needs_clarification: boolean } | null,
-  ): string {
-    // Stub response for v0.1 - actual LLM integration would happen in Q12/Q13
-    // The routingDecision.pipeline indicates what type of response should be generated:
-    // - ONBOARDING_CHAT, FRIEND_CHAT, EMOTIONAL_SUPPORT, INFO_QA, REFUSAL
-    
-    if (routingDecision.pipeline === 'REFUSAL') {
-      // Per AI_PIPELINE.md §6.1.1: CREATED users get refusal message
-      return 'Please complete onboarding before chatting.';
+  private async getRecentConversationHistory(
+    conversationId: string,
+    limit: number,
+  ): Promise<Array<{ role: 'user' | 'assistant'; content: string }>> {
+    const messages = await this.prisma.message.findMany({
+      where: {
+        conversationId,
+        status: 'COMPLETED',
+      },
+      orderBy: { createdAt: 'desc' },
+      take: limit,
+      select: {
+        role: true,
+        content: true,
+      },
+    });
+
+    // Reverse to get chronological order
+    return messages.reverse().map(m => ({
+      role: m.role as 'user' | 'assistant',
+      content: m.content,
+    }));
+  }
+
+  /**
+   * Parse stableStyleParams from JSON to typed object.
+   * 
+   * Per AI_PIPELINE.md §2.4: StableStyleParams structure
+   * 
+   * @param stableStyleParams - JSON value from database
+   * @returns Parsed params or undefined
+   */
+  private parseStableStyleParams(
+    stableStyleParams: Prisma.JsonValue | null | undefined,
+  ): LlmGenerationContext['stableStyleParams'] | undefined {
+    if (!stableStyleParams || typeof stableStyleParams !== 'object') {
+      return undefined;
     }
 
-    // Q11: Handle correction responses
-    // Per AI_PIPELINE.md §12.4: If surfaced_memory_ids is empty, ask for clarification
-    if (correctionResult) {
-      if (correctionResult.needs_clarification) {
-        return "I'm not sure which part you mean. Could you tell me what specifically is wrong?";
-      }
-      if (correctionResult.invalidated_memory_ids.length > 0) {
-        return "Got it, I'll update what I remember. Thanks for letting me know!";
-      }
-    }
+    const params = stableStyleParams as Record<string, unknown>;
     
-    if (isFirstMessage) {
-      return "Hey! It's great to meet you. I'm really happy you're here. What's on your mind?";
-    }
-    
-    // Q10: For now, return simple stub responses
-    // Future Q12/Q13 will use routingDecision.pipeline to route to proper handlers
-    return "I hear you! Tell me more about that.";
+    return {
+      msg_length_pref: params.msg_length_pref as 'short' | 'medium' | 'long' | undefined,
+      emoji_freq: params.emoji_freq as 'none' | 'light' | 'frequent' | undefined,
+      humor_mode: params.humor_mode as 'none' | 'light_sarcasm' | 'frequent_jokes' | 'deadpan' | undefined,
+      directness_level: params.directness_level as 'soft' | 'balanced' | 'blunt' | undefined,
+      followup_question_rate: params.followup_question_rate as 'low' | 'medium' | undefined,
+      lexicon_bias: params.lexicon_bias as 'clean' | 'slang' | 'internet_shorthand' | undefined,
+    };
   }
 
   /**

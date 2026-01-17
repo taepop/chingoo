@@ -728,4 +728,39 @@ export class MemoryService {
 
     return extractedIds;
   }
+
+  /**
+   * Get memories by their IDs.
+   * 
+   * Used by ChatService to fetch memory details for LLM context.
+   * Per AI_PIPELINE.md §9: "Memory snippets (limited; never dump many)"
+   * 
+   * @param memoryIds - Array of memory IDs to fetch
+   * @returns Array of memory records with key and value
+   */
+  async getMemoriesByIds(memoryIds: string[]): Promise<Array<{
+    id: string;
+    memoryKey: string;
+    memoryValue: string;
+    type: string;
+  }>> {
+    if (memoryIds.length === 0) {
+      return [];
+    }
+
+    const memories = await this.prisma.memory.findMany({
+      where: {
+        id: { in: memoryIds },
+        status: 'ACTIVE',
+      },
+      select: {
+        id: true,
+        memoryKey: true,
+        memoryValue: true,
+        type: true,
+      },
+    });
+
+    return memories;
+  }
 }

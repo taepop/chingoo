@@ -6,6 +6,7 @@ import { RouterService } from '../router/router.service';
 import { TopicMatchService } from '../topicmatch/topicmatch.service';
 import { MemoryService } from '../memory/memory.service';
 import { PostProcessorService } from '../postprocessor/postprocessor.service';
+import { LlmService } from '../llm/llm.service';
 import {
   ChatRequestDto,
   UserState,
@@ -23,6 +24,7 @@ import { createHash } from 'crypto';
  * - Input validation
  * - Q11: Memory extraction + surfacing + correction targeting
  * - Q12: PostProcessor integration + persistence order invariant
+ * - Q13: LLM integration with mocking for deterministic CI
  */
 describe('ChatService', () => {
   let service: ChatService;
@@ -32,6 +34,7 @@ describe('ChatService', () => {
   let topicMatchService: jest.Mocked<TopicMatchService>;
   let memoryService: jest.Mocked<MemoryService>;
   let postProcessorService: jest.Mocked<PostProcessorService>;
+  let llmService: jest.Mocked<LlmService>;
 
   const ASSISTANT_MSG_NAMESPACE = 'chingoo-assistant-message-v1';
   
@@ -53,6 +56,7 @@ describe('ChatService', () => {
     const mockPrismaService = {
       message: {
         findUnique: jest.fn(),
+        findMany: jest.fn().mockResolvedValue([]), // For getRecentConversationHistory
         create: jest.fn(),
         update: jest.fn(),
       },
@@ -108,6 +112,7 @@ describe('ChatService', () => {
       extractAndPersist: jest.fn().mockResolvedValue([]),
       extractMemoryCandidates: jest.fn().mockReturnValue([]),
       persistMemoryCandidate: jest.fn().mockResolvedValue('mock-memory-id'),
+      getMemoriesByIds: jest.fn().mockResolvedValue([]), // Q13: For LLM context
     };
 
     // Q12: Mock PostProcessorService
@@ -123,6 +128,12 @@ describe('ChatService', () => {
       countEmojis: jest.fn().mockReturnValue(0),
     };
 
+    // Q13: Mock LlmService for deterministic CI
+    // Per task requirement: "For tests, mock the LLM call so CI is deterministic (no network calls during tests)"
+    const mockLlmService = {
+      generate: jest.fn().mockResolvedValue('Mocked LLM response for testing'),
+    };
+
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         ChatService,
@@ -132,6 +143,7 @@ describe('ChatService', () => {
         { provide: TopicMatchService, useValue: mockTopicMatchService },
         { provide: MemoryService, useValue: mockMemoryService },
         { provide: PostProcessorService, useValue: mockPostProcessorService },
+        { provide: LlmService, useValue: mockLlmService },
       ],
     }).compile();
 
@@ -142,6 +154,7 @@ describe('ChatService', () => {
     topicMatchService = module.get(TopicMatchService);
     memoryService = module.get(MemoryService);
     postProcessorService = module.get(PostProcessorService);
+    llmService = module.get(LlmService);
   });
 
   describe('sendMessage', () => {
@@ -247,18 +260,20 @@ describe('ChatService', () => {
     });
 
     describe('ONBOARDING validation', () => {
-      it('should throw ForbiddenException when persona is not assigned', async () => {
+      it('should throw ForbiddenException when stableStyleParams is not assigned', async () => {
         // No existing message
         (prismaService.message.findUnique as jest.Mock).mockResolvedValueOnce(null);
 
-        // Conversation exists with unassigned persona
+        // Conversation exists with unassigned persona (stableStyleParams is null)
+        // [MINIMAL DEVIATION] Only stableStyleParams is checked since personaTemplateId
+        // requires persona_templates table seed data (SCHEMA.md B.5)
         (prismaService.conversation.findUnique as jest.Mock).mockResolvedValueOnce({
           id: mockConversationId,
           userId: mockUserId,
           aiFriendId: 'ai-friend-123',
           aiFriend: {
-            personaTemplateId: null,
-            stableStyleParams: null,
+            personaTemplateId: null, // OK to be null
+            stableStyleParams: null, // This triggers the error
           },
           user: {
             id: mockUserId,

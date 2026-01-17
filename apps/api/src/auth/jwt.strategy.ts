@@ -5,13 +5,13 @@ import { PrismaService } from '../prisma/prisma.service';
 
 export interface JwtPayload {
   sub: string; // user_id
-  cognitoSub: string;
+  email?: string;
 }
 
 @Injectable()
 export class JwtStrategy extends PassportStrategy(Strategy) {
   constructor(private prisma: PrismaService) {
-    // [MINIMAL DEVIATION] Dev bypass: use a simple secret for local development
+    // Get JWT secret - allow dev fallback
     const devBypass = process.env.DEV_BYPASS_AUTH === 'true';
     const secret = devBypass
       ? process.env.JWT_SECRET || 'dev-secret-change-in-production'
@@ -42,7 +42,7 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
 
     return {
       userId: user.id,
-      cognitoSub: user.cognitoSub,
+      email: user.email,
       state: user.state,
     };
   }

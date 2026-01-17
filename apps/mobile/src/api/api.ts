@@ -6,6 +6,7 @@
 import {
   AuthRequestDto,
   AuthResponseDto,
+  SignupRequestDto,
   UserProfileResponseDto,
   OnboardingRequestDto,
   OnboardingResponseDto,
@@ -63,7 +64,7 @@ async function fetchWithAuth<T>(
       errorData.statusCode || response.status,
       errorData.message || response.statusText,
       errorData.error || 'Unknown error',
-      errorData.constraints, // Pass constraints for validation errors (400)
+      errorData.constraints,
     );
   }
 
@@ -72,18 +73,53 @@ async function fetchWithAuth<T>(
 
 export const api = {
   /**
+   * POST /auth/signup
+   * Creates a new user account with email and password.
+   * Request: SignupRequestDto { email, password, confirm_password }
+   * Response: AuthResponseDto { access_token, user_id, email, state }
+   */
+  async signup(
+    email: string,
+    password: string,
+    confirmPassword: string,
+  ): Promise<AuthResponseDto> {
+    const request: SignupRequestDto = {
+      email,
+      password,
+      confirm_password: confirmPassword,
+    };
+    return fetchWithAuth<AuthResponseDto>('/auth/signup', {
+      method: 'POST',
+      body: JSON.stringify(request),
+    });
+  },
+
+  /**
    * POST /auth/login
-   * Per API_CONTRACT.md: Authenticates the user and returns the token required for all other calls.
-   * Request: AuthRequestDto { identity_token, email? }
+   * Authenticates user with email and password.
+   * Request: AuthRequestDto { email, password }
+   * Response: AuthResponseDto { access_token, user_id, email, state }
+   */
+  async login(email: string, password: string): Promise<AuthResponseDto> {
+    const request: AuthRequestDto = {
+      email,
+      password,
+    };
+    return fetchWithAuth<AuthResponseDto>('/auth/login', {
+      method: 'POST',
+      body: JSON.stringify(request),
+    });
+  },
+
+  /**
+   * POST /auth/login (Cognito)
+   * Authenticates user with Cognito identity token (legacy/alternative).
+   * Request: AuthRequestDto { identity_token }
    * Response: AuthResponseDto { access_token, user_id, state }
    */
-  async login(
-    identityToken: string,
-    email?: string,
-  ): Promise<AuthResponseDto> {
+  async loginWithCognito(identityToken: string): Promise<AuthResponseDto> {
     const request: AuthRequestDto = {
       identity_token: identityToken,
-      email,
     };
     return fetchWithAuth<AuthResponseDto>('/auth/login', {
       method: 'POST',
@@ -107,10 +143,7 @@ export const api = {
   /**
    * POST /user/onboarding
    * Per API_CONTRACT.md: Submits onboarding data and creates conversation.
-   * Request: OnboardingRequestDto {
-   *   preferred_name, age_band, country_or_region, occupation_category,
-   *   client_timezone, proactive_messages_enabled, suppressed_topics
-   * }
+   * Request: OnboardingRequestDto
    * Response: OnboardingResponseDto { user_id, state, conversation_id, updated_at }
    */
   async onboarding(
@@ -130,9 +163,7 @@ export const api = {
   /**
    * POST /chat/send
    * Per API_CONTRACT.md: Sends a user message and receives AI response.
-   * Request: ChatRequestDto {
-   *   message_id, conversation_id, user_message, local_timestamp, user_timezone
-   * }
+   * Request: ChatRequestDto
    * Response: ChatResponseDto { message_id, user_state, assistant_message }
    */
   async sendMessage(
