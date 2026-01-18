@@ -1,7 +1,8 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { HeuristicFlags } from '../router/router.service';
 import { TopicMatchResult } from '../topicmatch/topicmatch.service';
+import { VectorService, VectorSearchResult } from '../vector/vector.service';
 
 /**
  * Memory types per AI_PIPELINE.md §12.1
@@ -91,6 +92,8 @@ export interface PersistInput {
  */
 @Injectable()
 export class MemoryService {
+  private readonly logger = new Logger(MemoryService.name);
+
   // Confidence initialization per AI_PIPELINE.md §12.3
   private readonly HEURISTIC_CONFIDENCE = 0.60;
   private readonly CONFIDENCE_INCREMENT = 0.15;
@@ -130,7 +133,10 @@ export class MemoryService {
     ],
   };
 
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private vectorService: VectorService,
+  ) {}
 
   /**
    * Extract memory candidates from user message using HEURISTICS ONLY.
@@ -477,6 +483,9 @@ export class MemoryService {
           },
         });
 
+        // Per SCHEMA.md §D.1: Delete invalidated memory from Qdrant
+        await this.vectorService.deleteMemory(targetMemoryId);
+
         result.invalidated_memory_ids.push(targetMemoryId);
 
         // If "don't remember that" / "forget that", also add to suppressed_memory_keys
@@ -587,6 +596,9 @@ export class MemoryService {
    * - if key exists with same value (ACTIVE): merge sources; increase confidence by +0.15 (cap 1.0)
    * - if key exists with different value (ACTIVE): create new ACTIVE record, mark old as SUPERSEDED
    * 
+   * Per SCHEMA.md §D.1: "After memory INSERT/UPDATE with status=ACTIVE, enqueue embedding job"
+   * For v0.1 MVP, we do synchronous embedding via VectorService.
+   * 
    * @param input - Persist input with candidate and context
    * @returns Created or updated memory ID
    */
@@ -646,7 +658,7 @@ export class MemoryService {
             },
           });
 
-          // Mark old as SUPERSEDED
+          // Mark old as SUPERSEDED and delete from vector store
           await this.prisma.memory.update({
             where: { id: existingMemory.id },
             data: {
@@ -654,6 +666,28 @@ export class MemoryService {
               supersededBy: newMemory.id,
             },
           });
+          
+          // Per SCHEMA.md §D.1: Delete superseded memory from Qdrant
+          await this.vectorService.deleteMemory(existingMemory.id);
+
+          // Index new memory in vector store
+          const qdrantPointId = await this.vectorService.upsertMemory({
+            memoryId: newMemory.id,
+            userId,
+            aiFriendId,
+            memoryType: candidate.type,
+            memoryKey: candidate.memoryKey,
+            memoryValue: candidate.memoryValue,
+            createdAt: newMemory.createdAt,
+          });
+
+          // Update memory with Qdrant point ID if indexing succeeded
+          if (qdrantPointId) {
+            await this.prisma.memory.update({
+              where: { id: newMemory.id },
+              data: { qdrantPointId },
+            });
+          }
 
           return newMemory.id;
         }
@@ -673,6 +707,25 @@ export class MemoryService {
         sourceMessageIds: [messageId],
       },
     });
+
+    // Index new memory in vector store per SCHEMA.md §D.1
+    const qdrantPointId = await this.vectorService.upsertMemory({
+      memoryId: newMemory.id,
+      userId,
+      aiFriendId,
+      memoryType: candidate.type,
+      memoryKey: candidate.memoryKey,
+      memoryValue: candidate.memoryValue,
+      createdAt: newMemory.createdAt,
+    });
+
+    // Update memory with Qdrant point ID if indexing succeeded
+    if (qdrantPointId) {
+      await this.prisma.memory.update({
+        where: { id: newMemory.id },
+        data: { qdrantPointId },
+      });
+    }
 
     return newMemory.id;
   }
@@ -762,5 +815,56 @@ export class MemoryService {
     });
 
     return memories;
+  }
+
+  /**
+   * Perform semantic search for relevant memories.
+   * 
+   * Per AI_PIPELINE.md §13 - Vector Retrieval (Qdrant) - Gated:
+   * - query text = retrieval_query_text or user_text_norm
+   * - topK = 4
+   * - filter: user_id + ai_friend_id + status=ACTIVE + exclude suppressed keys
+   * 
+   * This method is called by ChatService when vector_search_policy is ON_DEMAND.
+   * 
+   * @param params - Search parameters
+   * @returns Array of semantically relevant memory IDs
+   */
+  async searchSemantically(params: {
+    userId: string;
+    aiFriendId: string;
+    queryText: string;
+  }): Promise<string[]> {
+    // Get suppressed memory keys for the user
+    const userControls = await this.prisma.userControls.findUnique({
+      where: { userId: params.userId },
+      select: { suppressedMemoryKeys: true },
+    });
+    
+    const suppressedKeys = (userControls?.suppressedMemoryKeys as string[]) || [];
+
+    // Perform semantic search via VectorService
+    const results: VectorSearchResult[] = await this.vectorService.searchMemories({
+      userId: params.userId,
+      aiFriendId: params.aiFriendId,
+      queryText: params.queryText,
+      suppressedMemoryKeys: suppressedKeys,
+    });
+
+    if (results.length > 0) {
+      this.logger.debug(
+        `Semantic search found ${results.length} memories for query: "${params.queryText.substring(0, 50)}..."`,
+      );
+    }
+
+    // Return memory IDs sorted by relevance (already sorted by Qdrant)
+    return results.map(r => r.memoryId);
+  }
+
+  /**
+   * Check if vector search is enabled and ready.
+   */
+  isVectorSearchReady(): boolean {
+    return this.vectorService.isReady();
   }
 }

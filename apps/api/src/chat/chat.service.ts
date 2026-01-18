@@ -469,15 +469,32 @@ export class ChatService {
       });
     }
 
-    // Q11: Select memories for surfacing
+    // Q11: Select memories for surfacing (keyword-based)
     // Per AI_PIPELINE.md §12.4: "Each assistant message must store surfaced_memory_ids"
     // Per task requirement: "If no memories are relevant, surfaced_memory_ids must be [] (empty array), not null"
-    const surfacedMemoryIds = await this.memoryService.selectMemoriesForSurfacing({
+    let surfacedMemoryIds = await this.memoryService.selectMemoriesForSurfacing({
       userId,
       aiFriendId: conversation.aiFriendId,
       userMessage: dto.user_message,
       topicMatches,
     });
+
+    // Per AI_PIPELINE.md §13 - Vector Retrieval (Qdrant) - Gated
+    // When vector_search_policy is ON_DEMAND, perform semantic search to find additional relevant memories
+    if (routingDecision.vector_search_policy === 'ON_DEMAND' && this.memoryService.isVectorSearchReady()) {
+      const queryText = routingDecision.retrieval_query_text || normNoPunct;
+      const semanticMemoryIds = await this.memoryService.searchSemantically({
+        userId,
+        aiFriendId: conversation.aiFriendId,
+        queryText,
+      });
+
+      // Merge semantic results with keyword-based results, avoiding duplicates
+      // Per AI_PIPELINE.md §13: "Return small snippets only; never flood the prompt"
+      // Combined limit of 4 memories max (2 from keyword + 2 from semantic search)
+      const combinedIds = new Set([...surfacedMemoryIds, ...semanticMemoryIds]);
+      surfacedMemoryIds = Array.from(combinedIds).slice(0, 4);
+    }
 
     // Fetch conversation history for LLM context
     // Per AI_PIPELINE.md §9: "Conversation recent turns"
