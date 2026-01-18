@@ -19,12 +19,13 @@
 
 const { execSync, spawn } = require('child_process');
 
-// Ports used by Expo/Metro
+// Ports used by Expo/Metro and API
 const PORTS = [
   8081,   // Metro bundler
   19000,  // Expo dev server (legacy)
   19001,  // Expo dev server
   19002,  // Expo DevTools
+  3000,   // Backend API server
 ];
 
 /**

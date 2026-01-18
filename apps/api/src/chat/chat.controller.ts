@@ -12,6 +12,8 @@ import { ChatService } from './chat.service';
 import {
   ChatRequestDto,
   ChatResponseDto,
+  GetHistoryRequestDto,
+  HistoryResponseDto,
   UserState,
 } from '@chingoo/shared';
 
@@ -54,11 +56,25 @@ export class ChatController {
    * Per API_CONTRACT.md §5 (GET /chat/history):
    * Returns HistoryResponseDto with paginated messages.
    * 
-   * TODO: Implement with GetHistoryRequestDto validation
+   * Query params:
+   * - conversation_id (required): UUID of conversation
+   * - before_timestamp (optional): ISO string for pagination
+   * - limit (optional): Number of messages, default 50, max 100
    */
   @Get('history')
-  async getHistory(@Query() query: any) {
-    // TODO: Implement GetHistoryRequestDto validation and HistoryResponseDto response
-    return { message: 'Get history endpoint - not yet implemented' };
+  async getHistory(
+    @Query() query: GetHistoryRequestDto,
+    @Req() req: any,
+  ): Promise<HistoryResponseDto> {
+    const userId: string = req.user.userId;
+    
+    // Parse limit to number if provided as string
+    const dto: GetHistoryRequestDto = {
+      conversation_id: query.conversation_id,
+      before_timestamp: query.before_timestamp,
+      limit: query.limit ? Number(query.limit) : undefined,
+    };
+    
+    return this.chatService.getHistory(userId, dto);
   }
 }

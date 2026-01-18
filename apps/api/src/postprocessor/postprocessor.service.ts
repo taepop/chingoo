@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
+import { RelationshipStage } from '@prisma/client';
 
 /**
  * StableStyleParams emoji_freq values per AI_PIPELINE.md §2.4
@@ -23,6 +24,8 @@ export interface PostProcessorInput {
   emojiFreq: EmojiFreq;
   /** msg_length_pref from StableStyleParams (optional for v0.1) */
   msgLengthPref?: MsgLengthPref;
+  /** Relationship stage for intimacy cap enforcement */
+  relationshipStage?: RelationshipStage;
 }
 
 /**
@@ -144,6 +147,19 @@ export class PostProcessorService {
       // Recompute opener_norm after emoji changes (emojis stripped anyway)
       openerNorm = this.computeOpenerNorm(content);
       rewriteAttempts++;
+    }
+
+    // Step 6: Relationship intimacy cap enforcement per AI_PIPELINE.md §10
+    // "Relationship intimacy cap: STRANGER: avoid overly intimate language"
+    if (input.relationshipStage) {
+      const intimacyViolation = this.checkIntimacyCap(content, input.relationshipStage);
+      if (intimacyViolation) {
+        violations.push('INTIMACY_CAP_VIOLATION');
+        content = this.enforceIntimacyCap(content, input.relationshipStage);
+        // Recompute opener_norm after intimacy adjustments
+        openerNorm = this.computeOpenerNorm(content);
+        rewriteAttempts++;
+      }
     }
 
     return {
@@ -432,6 +448,120 @@ export class PostProcessorService {
 
     // Already short, just return as-is
     return content;
+  }
+
+  /**
+   * Check if content violates intimacy cap for the given relationship stage.
+   * Per AI_PIPELINE.md §10:
+   * - STRANGER: avoid overly intimate language
+   * - CLOSE_FRIEND: warmer allowed, but still no dependency/exclusivity
+   */
+  private checkIntimacyCap(content: string, stage: RelationshipStage): boolean {
+    const normalized = content.toLowerCase();
+    
+    // Overly intimate phrases that should be avoided in STRANGER/ACQUAINTANCE stages
+    const overlyIntimatePhrases = [
+      'i love you',
+      'i miss you',
+      'i need you',
+      'can\'t live without you',
+      'you\'re my everything',
+      'you complete me',
+      'i\'m nothing without you',
+      'you\'re the only one',
+      'i\'m yours',
+      'you belong to me',
+      'we\'re meant to be',
+      'soulmate',
+      'destined',
+    ];
+    
+    // Dependency/exclusivity phrases (not allowed even for CLOSE_FRIEND)
+    const dependencyPhrases = [
+      'i can\'t function without you',
+      'you\'re my only reason',
+      'i exist for you',
+      'you\'re my world',
+      'nothing matters without you',
+    ];
+    
+    // Check dependency phrases (forbidden at all stages)
+    for (const phrase of dependencyPhrases) {
+      if (normalized.includes(phrase)) {
+        return true;
+      }
+    }
+    
+    // Check overly intimate phrases based on stage
+    if (stage === 'STRANGER' || stage === 'ACQUAINTANCE') {
+      for (const phrase of overlyIntimatePhrases) {
+        if (normalized.includes(phrase)) {
+          return true;
+        }
+      }
+    }
+    
+    return false;
+  }
+
+  /**
+   * Enforce intimacy cap by rewriting overly intimate language.
+   * Per AI_PIPELINE.md §10: Rewrite to appropriate level for relationship stage.
+   */
+  private enforceIntimacyCap(content: string, stage: RelationshipStage): string {
+    let rewritten = content;
+    const normalized = content.toLowerCase();
+    
+    // Replace overly intimate phrases with stage-appropriate alternatives
+    const replacements: Record<string, Record<RelationshipStage, string>> = {
+      'i love you': {
+        STRANGER: 'I appreciate that',
+        ACQUAINTANCE: 'That\'s really nice of you',
+        FRIEND: 'That means a lot',
+        CLOSE_FRIEND: 'That\'s really sweet',
+      },
+      'i miss you': {
+        STRANGER: 'Good to hear from you',
+        ACQUAINTANCE: 'Nice to chat again',
+        FRIEND: 'Good to talk again',
+        CLOSE_FRIEND: 'Great to hear from you',
+      },
+      'i need you': {
+        STRANGER: 'I\'m here to help',
+        ACQUAINTANCE: 'I\'m here if you need someone',
+        FRIEND: 'I\'m here for you',
+        CLOSE_FRIEND: 'I\'m always here for you',
+      },
+    };
+    
+    // Apply replacements
+    for (const [phrase, stageReplacements] of Object.entries(replacements)) {
+      if (normalized.includes(phrase)) {
+        const replacement = stageReplacements[stage] || stageReplacements.FRIEND;
+        // Case-insensitive replacement
+        const regex = new RegExp(phrase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi');
+        rewritten = rewritten.replace(regex, replacement);
+      }
+    }
+    
+    // Remove dependency phrases entirely (replace with neutral response)
+    const dependencyPhrases = [
+      'i can\'t live without you',
+      'you\'re my everything',
+      'you complete me',
+      'i\'m nothing without you',
+      'you\'re the only one',
+    ];
+    
+    for (const phrase of dependencyPhrases) {
+      if (normalized.includes(phrase)) {
+        // Replace with a supportive but boundary-respecting phrase
+        const regex = new RegExp(phrase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi');
+        rewritten = rewritten.replace(regex, 'I\'m here to support you as a friend');
+      }
+    }
+    
+    return rewritten.trim() || content; // Fallback to original if rewrite is empty
   }
 
   /**

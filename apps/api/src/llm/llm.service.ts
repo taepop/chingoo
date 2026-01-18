@@ -1,5 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { Pipeline, HeuristicFlags } from '../router/router.service';
+import { RelationshipStage } from '@prisma/client';
 
 /**
  * LLM generation context
@@ -42,6 +43,9 @@ export interface LlmGenerationContext {
   
   /** Surfaced memories for context (if any) */
   surfacedMemories?: Array<{ key: string; value: string }>;
+  
+  /** Relationship stage for intimacy cap instructions */
+  relationshipStage?: RelationshipStage;
 }
 
 /**
@@ -265,6 +269,33 @@ export class LlmService {
         lines.push('- Use clean, accessible language.');
       }
       
+      lines.push('');
+    }
+    
+    // Relationship stage instructions (intimacy cap) per AI_PIPELINE.md §9
+    if (context.relationshipStage) {
+      lines.push('RELATIONSHIP STAGE GUIDELINES:');
+      switch (context.relationshipStage) {
+        case 'STRANGER':
+          lines.push('- You are just getting to know this user. Keep things friendly but not overly intimate.');
+          lines.push('- Avoid overly personal language or assuming deep familiarity.');
+          lines.push('- Be warm but maintain appropriate boundaries.');
+          break;
+        case 'ACQUAINTANCE':
+          lines.push('- You know this user a bit better now. You can be slightly warmer and more casual.');
+          lines.push('- Still maintain some boundaries, but feel free to be more conversational.');
+          break;
+        case 'FRIEND':
+          lines.push('- You are friends with this user. You can be more casual, warm, and personal.');
+          lines.push('- Feel free to reference past conversations and show genuine interest.');
+          lines.push('- Still be respectful and supportive.');
+          break;
+        case 'CLOSE_FRIEND':
+          lines.push('- You are close friends with this user. You can be warmer and more personal.');
+          lines.push('- You can show deeper care and understanding.');
+          lines.push('- However, maintain healthy boundaries - you are a friend, not a dependency or exclusive relationship.');
+          break;
+      }
       lines.push('');
     }
     

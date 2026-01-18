@@ -12,6 +12,8 @@ import {
   OnboardingResponseDto,
   ChatRequestDto,
   ChatResponseDto,
+  GetHistoryRequestDto,
+  HistoryResponseDto,
 } from '@chingoo/shared';
 
 /**
@@ -176,6 +178,34 @@ export const api = {
         method: 'POST',
         body: JSON.stringify(request),
       },
+      token,
+    );
+  },
+
+  /**
+   * GET /chat/history
+   * Per API_CONTRACT.md: Fetches chat history for a conversation.
+   * Query params: conversation_id, before_timestamp?, limit?
+   * Response: HistoryResponseDto { messages: Array<{id, role, content, created_at}> }
+   */
+  async getHistory(
+    token: string,
+    conversationId: string,
+    beforeTimestamp?: string,
+    limit?: number,
+  ): Promise<HistoryResponseDto> {
+    const params = new URLSearchParams();
+    params.append('conversation_id', conversationId);
+    if (beforeTimestamp) {
+      params.append('before_timestamp', beforeTimestamp);
+    }
+    if (limit) {
+      params.append('limit', limit.toString());
+    }
+    
+    return fetchWithAuth<HistoryResponseDto>(
+      `/chat/history?${params.toString()}`,
+      { method: 'GET' },
       token,
     );
   },

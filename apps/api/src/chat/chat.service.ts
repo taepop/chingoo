@@ -17,6 +17,8 @@ import { RelationshipService } from '../relationship/relationship.service';
 import {
   ChatRequestDto,
   ChatResponseDto,
+  GetHistoryRequestDto,
+  HistoryResponseDto,
   UserState,
   ApiErrorDto,
   AgeBand,
@@ -487,6 +489,20 @@ export class ChatService {
     // Fetch surfaced memory details for personalization
     const surfacedMemories = await this.memoryService.getMemoriesByIds(surfacedMemoryIds);
 
+    // Fetch relationship stage for intimacy cap enforcement
+    const relationship = await this.prisma.relationship.findUnique({
+      where: {
+        userId_aiFriendId: {
+          userId,
+          aiFriendId: conversation.aiFriendId,
+        },
+      },
+      select: {
+        relationshipStage: true,
+      },
+    });
+    const relationshipStage = relationship?.relationshipStage || 'STRANGER';
+
     // Parse stableStyleParams for LLM context
     const stableStyleParams = this.parseStableStyleParams(conversation.aiFriend?.stableStyleParams);
 
@@ -508,6 +524,7 @@ export class ChatService {
           key: m.memoryKey,
           value: m.memoryValue,
         })),
+        relationshipStage,
       };
       
       draftContent = await this.llmService.generate(llmContext);
@@ -530,6 +547,7 @@ export class ChatService {
       draftContent,
       conversationId: dto.conversation_id,
       emojiFreq,
+      relationshipStage,
     });
 
     // Use post-processed content and opener_norm for storage
@@ -815,5 +833,73 @@ export class ChatService {
     }
 
     return 'light'; // Default
+  }
+
+  /**
+   * GET /chat/history
+   * 
+   * Per API_CONTRACT.md §5: Returns paginated chat history for a conversation.
+   * 
+   * @param userId - Authenticated user ID
+   * @param dto - GetHistoryRequestDto with conversation_id, optional before_timestamp and limit
+   * @returns HistoryResponseDto with messages array
+   */
+  async getHistory(
+    userId: string,
+    dto: GetHistoryRequestDto,
+  ): Promise<HistoryResponseDto> {
+    const { conversation_id, before_timestamp, limit = 50 } = dto;
+
+    // Validate conversation belongs to user
+    const conversation = await this.prisma.conversation.findUnique({
+      where: { id: conversation_id },
+      select: { userId: true },
+    });
+
+    if (!conversation || conversation.userId !== userId) {
+      throw new BadRequestException({
+        statusCode: HttpStatus.BAD_REQUEST,
+        message: 'Invalid conversation_id',
+        error: 'Bad Request',
+      } as ApiErrorDto);
+    }
+
+    // Build query conditions
+    const whereConditions: Prisma.MessageWhereInput = {
+      conversationId: conversation_id,
+      status: 'COMPLETED',
+    };
+
+    // If before_timestamp provided, fetch messages older than that
+    if (before_timestamp) {
+      whereConditions.createdAt = {
+        lt: new Date(before_timestamp),
+      };
+    }
+
+    // Fetch messages
+    const messages = await this.prisma.message.findMany({
+      where: whereConditions,
+      orderBy: { createdAt: 'desc' },
+      take: Math.min(limit, 100), // Cap at 100 for safety
+      select: {
+        id: true,
+        role: true,
+        content: true,
+        createdAt: true,
+      },
+    });
+
+    // Reverse to get chronological order (oldest first)
+    const chronologicalMessages = messages.reverse();
+
+    return {
+      messages: chronologicalMessages.map(m => ({
+        id: m.id,
+        role: m.role as 'user' | 'assistant',
+        content: m.content,
+        created_at: m.createdAt.toISOString(),
+      })),
+    };
   }
 }

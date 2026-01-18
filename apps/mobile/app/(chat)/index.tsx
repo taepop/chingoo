@@ -74,7 +74,7 @@ export default function ChatScreen() {
   const [lastSent, setLastSent] = useState<LastSentPayload | null>(null);
   const [replayStatus, setReplayStatus] = useState<string | null>(null);
 
-  // Fetch conversation_id on mount via GET /user/me
+  // Fetch conversation_id on mount via GET /user/me, then load chat history
   useEffect(() => {
     const init = async () => {
       try {
@@ -94,6 +94,25 @@ export default function ChatScreen() {
         }
 
         setConversationId(userProfile.conversation_id);
+
+        // Load chat history
+        try {
+          const historyResponse = await api.getHistory(
+            token,
+            userProfile.conversation_id,
+            undefined, // no before_timestamp - get most recent
+            50, // limit
+          );
+
+          if (historyResponse.messages && historyResponse.messages.length > 0) {
+            setMessages(historyResponse.messages);
+            // Scroll to bottom after loading history
+            setTimeout(() => scrollViewRef.current?.scrollToEnd({ animated: false }), 100);
+          }
+        } catch (historyErr) {
+          // History loading failed, but we can still chat
+          console.warn('Failed to load chat history:', historyErr);
+        }
       } catch (err) {
         if (err instanceof ApiError) {
           setError(`Failed to load: ${err.message}`);
