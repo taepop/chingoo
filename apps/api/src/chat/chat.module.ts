@@ -9,6 +9,7 @@ import { MemoryModule } from '../memory/memory.module';
 import { PostProcessorModule } from '../postprocessor/postprocessor.module';
 import { LlmModule } from '../llm/llm.module';
 import { RelationshipModule } from '../relationship/relationship.module';
+import { PersonaModule } from '../persona/persona.module';
 
 /**
  * Chat Module
@@ -22,9 +23,10 @@ import { RelationshipModule } from '../relationship/relationship.module';
  * Q12: Integrates PostProcessorService for behavior enforcement per AI_PIPELINE.md §10.
  * Q13: Integrates LlmService for real OpenAI calls per AI_PIPELINE.md §7.1.
  * Q14: Integrates RelationshipService for rapport score updates per AI_PIPELINE.md §11.
+ * Q15: Integrates PersonaService for retry persona assignment per AI_PIPELINE.md §3.
  */
 @Module({
-  imports: [PrismaModule, TraceModule, RouterModule, TopicMatchModule, MemoryModule, PostProcessorModule, LlmModule, RelationshipModule],
+  imports: [PrismaModule, TraceModule, RouterModule, TopicMatchModule, MemoryModule, PostProcessorModule, LlmModule, RelationshipModule, PersonaModule],
   controllers: [ChatController],
   providers: [ChatService],
   exports: [ChatService],

@@ -5,6 +5,7 @@ import {
   ConflictException,
   HttpStatus,
   InternalServerErrorException,
+  Logger,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { TraceService } from '../trace/trace.service';
@@ -14,6 +15,7 @@ import { MemoryService } from '../memory/memory.service';
 import { PostProcessorService, EmojiFreq } from '../postprocessor/postprocessor.service';
 import { LlmService, LlmGenerationContext } from '../llm/llm.service';
 import { RelationshipService } from '../relationship/relationship.service';
+import { PersonaService } from '../persona/persona.service';
 import {
   ChatRequestDto,
   ChatResponseDto,
@@ -52,6 +54,8 @@ const ASSISTANT_MSG_NAMESPACE = 'chingoo-assistant-message-v1';
 
 @Injectable()
 export class ChatService {
+  private readonly logger = new Logger(ChatService.name);
+
   constructor(
     private prisma: PrismaService,
     private traceService: TraceService,
@@ -61,6 +65,7 @@ export class ChatService {
     private postProcessorService: PostProcessorService,
     private llmService: LlmService,
     private relationshipService: RelationshipService,
+    private personaService: PersonaService,
   ) {}
 
   /**
@@ -129,9 +134,51 @@ export class ChatService {
     }
 
     // Step 3: For ONBOARDING users, validate required data exists
+    // Also check for ACTIVE users in case persona assignment failed during onboarding
     const isOnboarding = userState === UserState.ONBOARDING;
     if (isOnboarding) {
       await this.validateOnboardingRequirements(userId, conversation.aiFriend);
+    }
+
+    // Step 3b: Retry persona assignment if missing (handles failed assignment during onboarding)
+    // Per AI_PIPELINE.md §3.1: Persona must be assigned before messages are processed
+    if (!conversation.aiFriend.stableStyleParams) {
+      this.logger.warn(`Persona not assigned for user ${userId}, attempting assignment...`);
+      try {
+        await this.personaService.assignPersona(userId, conversation.aiFriend.id);
+        this.logger.log(`Persona successfully assigned for user ${userId} during chat`);
+        
+        // Reload conversation with updated persona data
+        const updatedConversation = await this.prisma.conversation.findUnique({
+          where: { id: dto.conversation_id },
+          include: {
+            aiFriend: {
+              select: {
+                id: true,
+                personaTemplateId: true,
+                stableStyleParams: true,
+              },
+            },
+            user: {
+              include: {
+                onboardingAnswers: true,
+              },
+            },
+          },
+        });
+        
+        if (updatedConversation) {
+          conversation.aiFriend = updatedConversation.aiFriend;
+        }
+      } catch (error) {
+        this.logger.error(`Failed to assign persona during chat for user ${userId}:`, error);
+        throw new ForbiddenException({
+          statusCode: HttpStatus.FORBIDDEN,
+          message: 'Onboarding incomplete: persona not assigned',
+          error: 'Forbidden',
+          constraints: ['stable_style_params'],
+        } as ApiErrorDto);
+      }
     }
 
     // Step 4: Build TurnPacket components and compute routing decision (Q10)

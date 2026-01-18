@@ -7,6 +7,7 @@ import { PrismaModule } from './prisma/prisma.module';
 import { TraceModule } from './trace/trace.module';
 import { TopicMatchModule } from './topicmatch/topicmatch.module';
 import { RouterModule } from './router/router.module';
+import { PersonaModule } from './persona/persona.module';
 import { JwtAuthGuard } from './auth/auth.guard';
 
 @Module({
@@ -14,6 +15,7 @@ import { JwtAuthGuard } from './auth/auth.guard';
     PrismaModule,
     TraceModule,
     AuthModule,
+    PersonaModule,
     UserModule,
     ChatModule,
     TopicMatchModule,
