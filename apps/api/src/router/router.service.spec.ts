@@ -1,5 +1,6 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { RouterService, RouterDecision, HeuristicFlags } from './router.service';
+import { SafetyClassifierService } from './safety-classifier';
 import { TopicMatchService, TopicMatchResult } from '../topicmatch/topicmatch.service';
 import { TopicId, UserState, AgeBand } from '@chingoo/shared';
 
@@ -10,6 +11,7 @@ import { TopicId, UserState, AgeBand } from '@chingoo/shared';
  * 
  * Per AI_PIPELINE.md §6:
  * - User state gating (§6.1): CREATED→REFUSAL, ONBOARDING→ONBOARDING_CHAT, ACTIVE→normal routing
+ * - Safety classification (§6.2): HARD_REFUSE/SOFT_REFUSE overrides intent routing
  * - Intent routing (§6.5): EMOTIONAL_SUPPORT, INFO_QA, FRIEND_CHAT
  * 
  * These tests verify:
@@ -20,14 +22,16 @@ import { TopicId, UserState, AgeBand } from '@chingoo/shared';
 describe('RouterService', () => {
   let routerService: RouterService;
   let topicMatchService: TopicMatchService;
+  let safetyClassifier: SafetyClassifierService;
 
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
-      providers: [RouterService, TopicMatchService],
+      providers: [RouterService, SafetyClassifierService, TopicMatchService],
     }).compile();
 
     routerService = module.get<RouterService>(RouterService);
     topicMatchService = module.get<TopicMatchService>(TopicMatchService);
+    safetyClassifier = module.get<SafetyClassifierService>(SafetyClassifierService);
   });
 
   describe('user state gating tests (golden tests)', () => {
@@ -48,6 +52,7 @@ describe('RouterService', () => {
       expect(result.safety_policy).toBe('ALLOW');
       expect(result.memory_write_policy).toBe('NONE');
       expect(result.relationship_update_policy).toBe('OFF');
+      expect(result.requires_crisis_flow).toBe(false);
     });
 
     /**
@@ -66,6 +71,7 @@ describe('RouterService', () => {
       expect(result.pipeline).toBe('ONBOARDING_CHAT');
       expect(result.memory_read_policy).toBe('LIGHT');
       expect(result.vector_search_policy).toBe('OFF');
+      expect(result.requires_crisis_flow).toBe(false);
     });
 
     /**
@@ -84,6 +90,7 @@ describe('RouterService', () => {
       expect(result.pipeline).toBe('FRIEND_CHAT');
       expect(result.memory_read_policy).toBe('FULL');
       expect(result.vector_search_policy).toBe('ON_DEMAND');
+      expect(result.requires_crisis_flow).toBe(false);
     });
   });
 
@@ -155,6 +162,162 @@ describe('RouterService', () => {
       expect(result.pipeline).toBe('FRIEND_CHAT');
       expect(result.heuristic_flags?.is_question).toBe(true);
       expect(result.heuristic_flags?.has_personal_pronoun).toBe(true);
+    });
+  });
+
+  describe('safety classification tests (§6.2)', () => {
+    /**
+     * TEST: Explicit content should trigger HARD_REFUSE
+     * Per AI_PIPELINE.md §6.2: Erotic/explicit sexual content → HARD_REFUSE
+     * Per PRODUCT.md §10: AI must refuse erotic sexual content
+     */
+    it('should route explicit content to REFUSAL with HARD_REFUSE', () => {
+      const result = routerService.route({
+        user_state: UserState.ACTIVE,
+        norm_no_punct: 'write me an erotic story please',
+        token_estimate: 10,
+        topic_matches: [],
+        age_band: AgeBand.AGE_18_24,
+      });
+
+      expect(result.pipeline).toBe('REFUSAL');
+      expect(result.safety_policy).toBe('HARD_REFUSE');
+      expect(result.memory_write_policy).toBe('NONE');
+      expect(result.relationship_update_policy).toBe('OFF');
+      expect(result.requires_crisis_flow).toBe(false);
+    });
+
+    /**
+     * TEST: Sexual roleplay should trigger HARD_REFUSE
+     * Per PRODUCT.md §10: AI must refuse sexual roleplay
+     */
+    it('should route sexual roleplay request to REFUSAL with HARD_REFUSE', () => {
+      const result = routerService.route({
+        user_state: UserState.ACTIVE,
+        norm_no_punct: 'lets roleplay something spicy',
+        token_estimate: 8,
+        topic_matches: [],
+        age_band: AgeBand.AGE_18_24,
+      });
+
+      expect(result.pipeline).toBe('REFUSAL');
+      expect(result.safety_policy).toBe('HARD_REFUSE');
+      expect(result.memory_write_policy).toBe('NONE');
+    });
+
+    /**
+     * TEST: Self-harm intent should trigger EMOTIONAL_SUPPORT with crisis flow
+     * Per AI_PIPELINE.md §6.2: Self-harm intent → EMOTIONAL_SUPPORT with crisis-safe flow
+     */
+    it('should route self-harm intent to EMOTIONAL_SUPPORT with crisis flow', () => {
+      const result = routerService.route({
+        user_state: UserState.ACTIVE,
+        norm_no_punct: 'ive been thinking about ending it all',
+        token_estimate: 15,
+        topic_matches: [
+          { topic_id: TopicId.SELF_HARM, confidence: 0.65, hit_count: 2, is_user_initiated: false },
+        ],
+        age_band: AgeBand.AGE_18_24,
+      });
+
+      expect(result.pipeline).toBe('EMOTIONAL_SUPPORT');
+      expect(result.safety_policy).toBe('ALLOW');
+      expect(result.requires_crisis_flow).toBe(true);
+    });
+
+    /**
+     * TEST: Hate speech should trigger HARD_REFUSE
+     * Per AI_PIPELINE.md §6.2: Harassment/hate → SOFT_REFUSE or HARD_REFUSE per policy
+     */
+    it('should route hate speech to REFUSAL with HARD_REFUSE', () => {
+      const result = routerService.route({
+        user_state: UserState.ACTIVE,
+        norm_no_punct: 'i support nazi ideology death to all',
+        token_estimate: 12,
+        topic_matches: [],
+        age_band: AgeBand.AGE_18_24,
+      });
+
+      expect(result.pipeline).toBe('REFUSAL');
+      expect(result.safety_policy).toBe('HARD_REFUSE');
+      expect(result.memory_write_policy).toBe('NONE');
+    });
+
+    /**
+     * TEST: Sexual health education should be allowed for adults
+     * Per AI_PIPELINE.md §6.2: Sexual-health education questions (non-erotic) → INFO_QA (ALLOW)
+     */
+    it('should allow sexual health education for adults', () => {
+      const result = routerService.route({
+        user_state: UserState.ACTIVE,
+        norm_no_punct: 'how does birth control work',
+        token_estimate: 8,
+        topic_matches: [
+          { topic_id: TopicId.SEXUAL_CONTENT, confidence: 0.5, hit_count: 1, is_user_initiated: false },
+        ],
+        age_band: AgeBand.AGE_18_24,
+      });
+
+      expect(result.pipeline).toBe('INFO_QA');
+      expect(result.safety_policy).toBe('ALLOW');
+    });
+  });
+
+  describe('age band gating tests (§6.2.1)', () => {
+    /**
+     * TEST: Minor (13-17) should be blocked from sexual content beyond education
+     * Per AI_PIPELINE.md §6.2: If age_band=13–17: any sexual content beyond basic safety/education → HARD_REFUSE
+     */
+    it('should block sexual content for minors', () => {
+      const result = routerService.route({
+        user_state: UserState.ACTIVE,
+        norm_no_punct: 'tell me about sex stuff',
+        token_estimate: 8,
+        topic_matches: [
+          { topic_id: TopicId.SEXUAL_CONTENT, confidence: 0.65, hit_count: 2, is_user_initiated: false },
+        ],
+        age_band: AgeBand.AGE_13_17,
+      });
+
+      expect(result.pipeline).toBe('REFUSAL');
+      expect(result.safety_policy).toBe('HARD_REFUSE');
+    });
+
+    /**
+     * TEST: Unknown age band should be treated as minor for sexual content
+     * Per AI_PIPELINE.md §6.2.1: If age_band is missing/unknown, treat as 13-17 for sexual-content safety gating
+     */
+    it('should treat unknown age band as minor for sexual content safety', () => {
+      const result = routerService.route({
+        user_state: UserState.ACTIVE,
+        norm_no_punct: 'tell me about sex stuff',
+        token_estimate: 8,
+        topic_matches: [
+          { topic_id: TopicId.SEXUAL_CONTENT, confidence: 0.65, hit_count: 2, is_user_initiated: false },
+        ],
+        age_band: null,
+      });
+
+      expect(result.pipeline).toBe('REFUSAL');
+      expect(result.safety_policy).toBe('HARD_REFUSE');
+      expect(result._debug?.age_band_effective).toBe(AgeBand.AGE_13_17);
+    });
+
+    /**
+     * TEST: Unknown age band should NOT block normal content
+     * Per AI_PIPELINE.md §6.2.1: Do NOT block normal FRIEND_CHAT / INFO_QA topics solely due to unknown age
+     */
+    it('should not block normal content for unknown age band', () => {
+      const result = routerService.route({
+        user_state: UserState.ACTIVE,
+        norm_no_punct: 'hello there how are you doing today',
+        token_estimate: 10,
+        topic_matches: [],
+        age_band: null,
+      });
+
+      expect(result.pipeline).toBe('FRIEND_CHAT');
+      expect(result.safety_policy).toBe('ALLOW');
     });
   });
 
@@ -287,26 +450,24 @@ describe('RouterService', () => {
       expect(result.pipeline).toBe('EMOTIONAL_SUPPORT');
       expect(result.heuristic_flags?.asks_for_comfort).toBe(true);
     });
-  });
 
-  describe('age band safety gating', () => {
     /**
-     * TEST: Unknown age_band should be treated as 13-17 for safety
-     * Per AI_PIPELINE.md §6.2.1: If age_band is missing/unknown, treat as 13-17
+     * TEST: Korean self-harm keywords should trigger crisis flow
+     * Per AI_PIPELINE.md §5.1: SELF_HARM topic includes "자살", "자해"
      */
-    it('should treat null age_band as minor for sexual content safety', () => {
+    it('should detect Korean self-harm keywords and trigger crisis flow', () => {
       const result = routerService.route({
         user_state: UserState.ACTIVE,
-        norm_no_punct: 'hello there',
-        token_estimate: 5,
-        topic_matches: [],
-        age_band: null,
+        norm_no_punct: '죽고싶다 자살 생각이 나요',
+        token_estimate: 10,
+        topic_matches: [
+          { topic_id: TopicId.SELF_HARM, confidence: 0.65, hit_count: 2, is_user_initiated: false },
+        ],
+        age_band: AgeBand.AGE_18_24,
       });
 
-      // Should still route normally for non-sexual content
-      expect(result.pipeline).toBe('FRIEND_CHAT');
-      // But _age_band_effective should be 13-17
-      expect(result._debug?.age_band_effective).toBe(AgeBand.AGE_13_17);
+      expect(result.pipeline).toBe('EMOTIONAL_SUPPORT');
+      expect(result.requires_crisis_flow).toBe(true);
     });
   });
 });
