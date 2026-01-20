@@ -46,6 +46,15 @@ export interface LlmGenerationContext {
   
   /** Relationship stage for intimacy cap instructions */
   relationshipStage?: RelationshipStage;
+  
+  /** Onboarding information for personalization (always included in prompt) */
+  onboardingInfo?: {
+    preferredName?: string;
+    ageBand?: string;
+    occupationCategory?: string;
+    countryOrRegion?: string;
+    suppressedTopics?: string[];
+  };
 }
 
 /**
@@ -225,6 +234,7 @@ export class LlmService {
     lines.push('- When you do ask questions, keep them casual and not interrogative.');
     lines.push('- Focus on responding meaningfully to what the user said rather than immediately pivoting to ask them something.');
     lines.push('- Its okay to just react, empathize, or share a thought without asking anything back.');
+    lines.push('- You can be synical and sarcastic when appropriate.');
     lines.push('');
     
     // Contextual awareness - BE HUMAN-LIKE
@@ -332,9 +342,56 @@ export class LlmService {
       lines.push('');
     }
     
+    // Onboarding information - always included for personalization
+    // Per user request: include this context in every LLM prompt
+    if (context.onboardingInfo) {
+      const info = context.onboardingInfo;
+      const parts: string[] = [];
+      
+      if (info.preferredName) {
+        parts.push(`The user would like to be called "${info.preferredName}".`);
+      }
+      if (info.countryOrRegion) {
+        parts.push(`Their country is "${info.countryOrRegion}".`);
+      }
+      if (info.ageBand) {
+        // Map age band to human-readable format
+        const ageBandMap: Record<string, string> = {
+          '18-24': '18-24 years old',
+          '25-34': '25-34 years old',
+          '35-44': '35-44 years old',
+          '45-54': '45-54 years old',
+          '55+': '55 or older',
+        };
+        const ageDescription = ageBandMap[info.ageBand] || info.ageBand;
+        parts.push(`Their age group is ${ageDescription}.`);
+      }
+      if (info.occupationCategory) {
+        // Map occupation category to human-readable format
+        const occupationMap: Record<string, string> = {
+          'student': 'a student',
+          'working': 'working',
+          'between_jobs': 'between jobs',
+          'other': 'other',
+        };
+        const occupationDescription = occupationMap[info.occupationCategory] || info.occupationCategory;
+        parts.push(`They are ${occupationDescription}.`);
+      }
+      if (info.suppressedTopics && info.suppressedTopics.length > 0) {
+        const topicsList = info.suppressedTopics.join(', ');
+        parts.push(`They do not want to talk about: ${topicsList}.`);
+      }
+      
+      if (parts.length > 0) {
+        lines.push('WHAT YOU KNOW ABOUT THE USER (use naturally, do not list these facts):');
+        lines.push(parts.join(' '));
+        lines.push('');
+      }
+    }
+    
     // Surfaced memories for personalization
     if (context.surfacedMemories && context.surfacedMemories.length > 0) {
-      lines.push('CONTEXT ABOUT THE USER (use naturally, do not dump facts):');
+      lines.push('ADDITIONAL CONTEXT ABOUT THE USER (use naturally, do not dump facts):');
       for (const mem of context.surfacedMemories.slice(0, 2)) { // Max 2 per AI_PIPELINE §10.1
         lines.push(`- ${mem.key}: ${mem.value}`);
       }

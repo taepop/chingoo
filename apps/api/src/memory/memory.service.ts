@@ -252,6 +252,199 @@ export class MemoryService {
     music: ['i listen to', "i'm listening to", 'im listening to', 'my favorite song', 'my favorite artist', 'my favorite band'],
   };
 
+  // ============================================================================
+  // EMOTIONAL_PATTERN EXTRACTION PATTERNS
+  // Per AI_PIPELINE.md §12.3.1 - Format: emotion:<pattern_id>
+  // pattern_id (v0.1): baseline_mood, stress_trigger_school, stress_trigger_work,
+  //                    coping_preference, social_energy
+  // ============================================================================
+
+  // Baseline mood patterns - general emotional disposition
+  private readonly emotionalPatterns = {
+    baseline_mood: {
+      positive: [
+        "i'm usually happy", 'im usually happy', "i'm generally happy", 'im generally happy',
+        "i'm a happy person", 'im a happy person', "i'm an optimistic person", 'im an optimistic person',
+        "i'm pretty cheerful", 'im pretty cheerful', "i'm a positive person", 'im a positive person',
+        "i'm usually in a good mood", 'im usually in a good mood', "i'm a cheerful person", 'im a cheerful person',
+        'i tend to be happy', 'i tend to be optimistic', 'i have a positive outlook',
+        "i'm often happy", 'im often happy', "i'm generally optimistic", 'im generally optimistic',
+        // Korean
+        '보통 행복', '긍정적인 편', '밝은 편',
+      ],
+      negative: [
+        "i'm usually sad", 'im usually sad', "i'm generally anxious", 'im generally anxious',
+        "i'm a pessimistic person", 'im a pessimistic person', "i'm often stressed", 'im often stressed',
+        "i'm usually worried", 'im usually worried', "i'm a nervous person", 'im a nervous person',
+        "i'm often anxious", 'im often anxious', "i'm pretty anxious", 'im pretty anxious',
+        "i'm always stressed", 'im always stressed', "i'm always worried", 'im always worried',
+        "i'm a worrier", 'im a worrier', 'i tend to be anxious', 'i tend to worry',
+        "i'm often depressed", 'im often depressed', "i'm usually down", 'im usually down',
+        // Korean
+        '우울한 편', '불안한 편', '걱정이 많', '스트레스 많',
+      ],
+      neutral: [
+        "i'm usually calm", 'im usually calm', "i'm generally chill", 'im generally chill',
+        "i'm a laid back person", 'im a laid back person', "i'm pretty relaxed", 'im pretty relaxed',
+        "i'm even-keeled", 'im even-keeled', "i'm emotionally stable", 'im emotionally stable',
+        "i'm usually mellow", 'im usually mellow', "i'm a calm person", 'im a calm person',
+        // Korean
+        '차분한 편', '침착한 편',
+      ],
+    },
+
+    // Stress triggers related to school/academics
+    stress_trigger_school: [
+      // Direct stress mentions
+      "school stresses me", 'school makes me stressed', 'school makes me anxious',
+      "i get stressed about school", 'i get anxious about school',
+      'i stress about exams', 'i stress about tests', 'i stress about grades',
+      'exams make me anxious', 'tests make me anxious', 'grades make me anxious',
+      "i'm stressed about homework", 'im stressed about homework',
+      "i'm stressed about my grades", 'im stressed about my grades',
+      "i'm stressed about assignments", 'im stressed about assignments',
+      // Worry patterns
+      'i worry about school', 'i worry about my grades', 'i worry about exams',
+      'i worry about failing', 'school gives me anxiety', 'exams give me anxiety',
+      // Struggle patterns
+      "i'm struggling in school", 'im struggling in school',
+      "i'm struggling with school", 'im struggling with school',
+      'school is overwhelming', 'classes are overwhelming',
+      // Korean
+      '학교 스트레스', '시험 스트레스', '학업 스트레스', '성적 걱정',
+    ],
+
+    // Stress triggers related to work/career
+    stress_trigger_work: [
+      // Direct stress mentions
+      "work stresses me", 'work makes me stressed', 'work makes me anxious',
+      "i get stressed about work", 'i get anxious about work',
+      'my job stresses me', 'my job makes me stressed',
+      "i'm stressed about work", 'im stressed about work',
+      "i'm stressed about my job", 'im stressed about my job',
+      // Boss/colleagues
+      'my boss stresses me', 'my manager stresses me', 'my boss makes me anxious',
+      "i'm stressed about my boss", 'im stressed about my boss',
+      // Deadlines/projects
+      'deadlines stress me', 'deadlines make me anxious',
+      "i'm stressed about deadlines", 'im stressed about deadlines',
+      "i'm stressed about projects", 'im stressed about projects',
+      // Work-life balance
+      'work is overwhelming', 'too much work stress',
+      'i worry about work', 'work gives me anxiety',
+      // Korean
+      '직장 스트레스', '일 스트레스', '업무 스트레스', '회사 스트레스',
+    ],
+
+    // Coping mechanisms and preferences
+    coping_preference: {
+      social: [
+        'i talk to friends when stressed', 'i vent to friends',
+        'talking helps me destress', 'i talk it out',
+        'i call someone when stressed', 'i text friends when anxious',
+        'i need to talk to someone', 'talking makes me feel better',
+        'i cope by talking', 'sharing helps me cope',
+        // Korean
+        '친구한테 말해', '얘기하면 풀려',
+      ],
+      solitary: [
+        'i need alone time', 'i need space when stressed',
+        'i like being alone when stressed', 'i cope alone',
+        'i prefer to be by myself', 'i need time alone',
+        'i deal with stress alone', 'i process things alone',
+        // Korean
+        '혼자 있으면 풀려', '혼자 시간 필요',
+      ],
+      active: [
+        'i exercise when stressed', 'i work out when anxious',
+        'i go to the gym when stressed', 'i run when stressed',
+        'exercise helps me destress', 'working out helps me cope',
+        'i cope by exercising', 'physical activity helps',
+        // Korean
+        '운동하면 풀려', '운동으로 스트레스 해소',
+      ],
+      creative: [
+        'i draw when stressed', 'i write when stressed',
+        'i make music when anxious', 'i paint when stressed',
+        'creating helps me destress', 'art helps me cope',
+        'i cope by creating', 'creative activities help',
+        // Korean
+        '그림 그리면 풀려', '글 쓰면 풀려',
+      ],
+      relaxation: [
+        'i sleep when stressed', 'i nap when anxious',
+        'i meditate when stressed', 'i do yoga when stressed',
+        'i take a bath when stressed', 'i relax when stressed',
+        'meditation helps me', 'deep breathing helps',
+        'i watch tv to destress', 'i watch shows to relax',
+        'i play games to destress', 'gaming helps me relax',
+        'i listen to music to destress', 'music helps me calm down',
+        // Korean
+        '자면 풀려', '명상하면 풀려', '음악 들으면 풀려',
+      ],
+      eating: [
+        'i eat when stressed', 'i stress eat',
+        'eating helps me cope', 'food makes me feel better',
+        'i snack when anxious', 'comfort food helps',
+        // Korean
+        '먹으면 풀려', '스트레스 받으면 먹어',
+      ],
+    },
+
+    // Social energy patterns - introvert/extrovert (only if explicitly stated)
+    social_energy: {
+      introvert: [
+        "i'm an introvert", 'im an introvert', "i'm introverted", 'im introverted',
+        "i'm a total introvert", 'im a total introvert',
+        "i'm very introverted", 'im very introverted',
+        "i'm pretty introverted", 'im pretty introverted',
+        'i consider myself an introvert', 'i identify as an introvert',
+        // Korean
+        '나 인트로버트', '나는 내향적',
+      ],
+      extrovert: [
+        "i'm an extrovert", 'im an extrovert', "i'm extroverted", 'im extroverted',
+        "i'm a total extrovert", 'im a total extrovert',
+        "i'm very extroverted", 'im very extroverted',
+        "i'm pretty extroverted", 'im pretty extroverted',
+        'i consider myself an extrovert', 'i identify as an extrovert',
+        // Korean
+        '나 엑스트로버트', '나는 외향적',
+      ],
+      ambivert: [
+        "i'm an ambivert", 'im an ambivert',
+        "i'm somewhere in between", 'im somewhere in between',
+        "i'm both introverted and extroverted", 'im both introverted and extroverted',
+        'depends on my mood', 'it depends on the situation',
+        // Korean
+        '나 앰비버트', '상황에 따라 달라',
+      ],
+    },
+
+    // Additional emotional patterns - anxiety triggers, happiness triggers
+    anxiety_triggers: [
+      // General anxiety patterns
+      'i get anxious when', 'i feel anxious about', 'i have anxiety about',
+      'makes me anxious', 'gives me anxiety', 'triggers my anxiety',
+      "i'm anxious about", 'im anxious about',
+      // Specific common triggers
+      'social situations make me anxious', 'crowds make me anxious',
+      'public speaking makes me anxious', 'meeting new people makes me anxious',
+      'i get anxious around people', 'i have social anxiety',
+      // Korean
+      '불안해', '걱정돼', '떨려',
+    ],
+
+    happiness_triggers: [
+      // General happiness patterns
+      'i feel happy when', 'i get happy when', 'makes me happy',
+      'i love when', 'nothing makes me happier than',
+      'i feel good when', 'i feel great when',
+      // Korean
+      '행복해질 때', '기분 좋아질 때',
+    ],
+  };
+
   // Food-related keywords for preference categorization (expanded)
   private readonly foodKeywords = [
     'pizza', 'sushi', 'burger', 'pasta', 'ramen', 'noodles', 'rice', 'soup', 'salad',
@@ -337,6 +530,10 @@ export class MemoryService {
     // Extract hobbies and activities
     const hobbyCandidates = this.extractHobbies(textLower, input.userMessage);
     candidates.push(...hobbyCandidates);
+
+    // Extract emotional patterns (baseline mood, stress triggers, coping, social energy)
+    const emotionalCandidates = this.extractEmotionalPatterns(textLower, input.userMessage);
+    candidates.push(...emotionalCandidates);
 
     // Deduplicate candidates by memoryKey
     const uniqueCandidates = this.deduplicateCandidates(candidates);
@@ -716,6 +913,322 @@ export class MemoryService {
     extractHobbyFromPatterns(this.hobbyPatterns.music, 'listens');
 
     return candidates;
+  }
+
+  /**
+   * Extract EMOTIONAL_PATTERN memories from text.
+   * 
+   * Per AI_PIPELINE.md §12.3.1:
+   * Format: emotion:<pattern_id>
+   * pattern_id (v0.1): baseline_mood, stress_trigger_school, stress_trigger_work,
+   *                    coping_preference, social_energy
+   * 
+   * EMOTIONAL_PATTERN memories are singleton-ish summaries about the user's
+   * emotional disposition, stress triggers, and coping mechanisms.
+   */
+  private extractEmotionalPatterns(textLower: string, originalMessage: string): MemoryCandidate[] {
+    const candidates: MemoryCandidate[] = [];
+
+    // -------------------------------------------------------------------------
+    // 1. Baseline Mood Detection
+    // -------------------------------------------------------------------------
+    
+    // Check for positive baseline mood
+    for (const pattern of this.emotionalPatterns.baseline_mood.positive) {
+      if (textLower.includes(pattern)) {
+        candidates.push({
+          type: 'EMOTIONAL_PATTERN',
+          memoryKey: 'emotion:baseline_mood',
+          memoryValue: 'positive|generally optimistic and happy',
+          confidence: this.HEURISTIC_CONFIDENCE,
+        });
+        break; // Only one baseline mood
+      }
+    }
+
+    // Check for negative baseline mood (only if no positive found)
+    if (!candidates.some(c => c.memoryKey === 'emotion:baseline_mood')) {
+      for (const pattern of this.emotionalPatterns.baseline_mood.negative) {
+        if (textLower.includes(pattern)) {
+          candidates.push({
+            type: 'EMOTIONAL_PATTERN',
+            memoryKey: 'emotion:baseline_mood',
+            memoryValue: 'negative|tends toward anxiety or low mood',
+            confidence: this.HEURISTIC_CONFIDENCE,
+          });
+          break;
+        }
+      }
+    }
+
+    // Check for neutral/calm baseline mood
+    if (!candidates.some(c => c.memoryKey === 'emotion:baseline_mood')) {
+      for (const pattern of this.emotionalPatterns.baseline_mood.neutral) {
+        if (textLower.includes(pattern)) {
+          candidates.push({
+            type: 'EMOTIONAL_PATTERN',
+            memoryKey: 'emotion:baseline_mood',
+            memoryValue: 'neutral|generally calm and stable',
+            confidence: this.HEURISTIC_CONFIDENCE,
+          });
+          break;
+        }
+      }
+    }
+
+    // -------------------------------------------------------------------------
+    // 2. Stress Trigger Detection - School
+    // -------------------------------------------------------------------------
+    
+    for (const pattern of this.emotionalPatterns.stress_trigger_school) {
+      if (textLower.includes(pattern)) {
+        // Extract what specifically triggers stress if possible
+        const afterPattern = textLower.substring(textLower.indexOf(pattern) + pattern.length).trim();
+        const triggerDetail = this.extractStressTriggerDetail(afterPattern) || 'academic pressure';
+        
+        candidates.push({
+          type: 'EMOTIONAL_PATTERN',
+          memoryKey: 'emotion:stress_trigger_school',
+          memoryValue: `school_stress|${triggerDetail}`,
+          confidence: this.HEURISTIC_CONFIDENCE,
+        });
+        break; // One school stress trigger per message
+      }
+    }
+
+    // -------------------------------------------------------------------------
+    // 3. Stress Trigger Detection - Work
+    // -------------------------------------------------------------------------
+    
+    for (const pattern of this.emotionalPatterns.stress_trigger_work) {
+      if (textLower.includes(pattern)) {
+        const afterPattern = textLower.substring(textLower.indexOf(pattern) + pattern.length).trim();
+        const triggerDetail = this.extractStressTriggerDetail(afterPattern) || 'work pressure';
+        
+        candidates.push({
+          type: 'EMOTIONAL_PATTERN',
+          memoryKey: 'emotion:stress_trigger_work',
+          memoryValue: `work_stress|${triggerDetail}`,
+          confidence: this.HEURISTIC_CONFIDENCE,
+        });
+        break;
+      }
+    }
+
+    // -------------------------------------------------------------------------
+    // 4. Coping Preference Detection
+    // -------------------------------------------------------------------------
+    
+    // Check social coping
+    for (const pattern of this.emotionalPatterns.coping_preference.social) {
+      if (textLower.includes(pattern)) {
+        candidates.push({
+          type: 'EMOTIONAL_PATTERN',
+          memoryKey: 'emotion:coping_preference',
+          memoryValue: 'social|prefers talking to others when stressed',
+          confidence: this.HEURISTIC_CONFIDENCE,
+        });
+        break;
+      }
+    }
+
+    // Check solitary coping (only if no coping found yet)
+    if (!candidates.some(c => c.memoryKey === 'emotion:coping_preference')) {
+      for (const pattern of this.emotionalPatterns.coping_preference.solitary) {
+        if (textLower.includes(pattern)) {
+          candidates.push({
+            type: 'EMOTIONAL_PATTERN',
+            memoryKey: 'emotion:coping_preference',
+            memoryValue: 'solitary|prefers alone time when stressed',
+            confidence: this.HEURISTIC_CONFIDENCE,
+          });
+          break;
+        }
+      }
+    }
+
+    // Check active coping
+    if (!candidates.some(c => c.memoryKey === 'emotion:coping_preference')) {
+      for (const pattern of this.emotionalPatterns.coping_preference.active) {
+        if (textLower.includes(pattern)) {
+          candidates.push({
+            type: 'EMOTIONAL_PATTERN',
+            memoryKey: 'emotion:coping_preference',
+            memoryValue: 'active|uses exercise/physical activity to cope',
+            confidence: this.HEURISTIC_CONFIDENCE,
+          });
+          break;
+        }
+      }
+    }
+
+    // Check creative coping
+    if (!candidates.some(c => c.memoryKey === 'emotion:coping_preference')) {
+      for (const pattern of this.emotionalPatterns.coping_preference.creative) {
+        if (textLower.includes(pattern)) {
+          candidates.push({
+            type: 'EMOTIONAL_PATTERN',
+            memoryKey: 'emotion:coping_preference',
+            memoryValue: 'creative|uses creative activities to cope',
+            confidence: this.HEURISTIC_CONFIDENCE,
+          });
+          break;
+        }
+      }
+    }
+
+    // Check relaxation coping
+    if (!candidates.some(c => c.memoryKey === 'emotion:coping_preference')) {
+      for (const pattern of this.emotionalPatterns.coping_preference.relaxation) {
+        if (textLower.includes(pattern)) {
+          candidates.push({
+            type: 'EMOTIONAL_PATTERN',
+            memoryKey: 'emotion:coping_preference',
+            memoryValue: 'relaxation|uses relaxation activities to cope',
+            confidence: this.HEURISTIC_CONFIDENCE,
+          });
+          break;
+        }
+      }
+    }
+
+    // Check eating coping
+    if (!candidates.some(c => c.memoryKey === 'emotion:coping_preference')) {
+      for (const pattern of this.emotionalPatterns.coping_preference.eating) {
+        if (textLower.includes(pattern)) {
+          candidates.push({
+            type: 'EMOTIONAL_PATTERN',
+            memoryKey: 'emotion:coping_preference',
+            memoryValue: 'eating|tends to eat when stressed',
+            confidence: this.HEURISTIC_CONFIDENCE,
+          });
+          break;
+        }
+      }
+    }
+
+    // -------------------------------------------------------------------------
+    // 5. Social Energy Detection (Introvert/Extrovert/Ambivert)
+    // Per spec: "only if user states explicitly"
+    // -------------------------------------------------------------------------
+    
+    // Check for introvert
+    for (const pattern of this.emotionalPatterns.social_energy.introvert) {
+      if (textLower.includes(pattern)) {
+        candidates.push({
+          type: 'EMOTIONAL_PATTERN',
+          memoryKey: 'emotion:social_energy',
+          memoryValue: 'introvert|self-identifies as introverted',
+          confidence: this.HEURISTIC_CONFIDENCE,
+        });
+        break;
+      }
+    }
+
+    // Check for extrovert (only if no social_energy found)
+    if (!candidates.some(c => c.memoryKey === 'emotion:social_energy')) {
+      for (const pattern of this.emotionalPatterns.social_energy.extrovert) {
+        if (textLower.includes(pattern)) {
+          candidates.push({
+            type: 'EMOTIONAL_PATTERN',
+            memoryKey: 'emotion:social_energy',
+            memoryValue: 'extrovert|self-identifies as extroverted',
+            confidence: this.HEURISTIC_CONFIDENCE,
+          });
+          break;
+        }
+      }
+    }
+
+    // Check for ambivert
+    if (!candidates.some(c => c.memoryKey === 'emotion:social_energy')) {
+      for (const pattern of this.emotionalPatterns.social_energy.ambivert) {
+        if (textLower.includes(pattern)) {
+          candidates.push({
+            type: 'EMOTIONAL_PATTERN',
+            memoryKey: 'emotion:social_energy',
+            memoryValue: 'ambivert|somewhere between introvert and extrovert',
+            confidence: this.HEURISTIC_CONFIDENCE,
+          });
+          break;
+        }
+      }
+    }
+
+    // -------------------------------------------------------------------------
+    // 6. Additional: Anxiety Triggers (specific things that cause anxiety)
+    // -------------------------------------------------------------------------
+    
+    for (const pattern of this.emotionalPatterns.anxiety_triggers) {
+      const patternIndex = textLower.indexOf(pattern);
+      if (patternIndex !== -1) {
+        const afterPattern = textLower.substring(patternIndex + pattern.length).trim();
+        const triggerContent = this.extractStressTriggerDetail(afterPattern);
+        
+        if (triggerContent && triggerContent.length >= 3) {
+          const slug = this.slugify(triggerContent);
+          candidates.push({
+            type: 'EMOTIONAL_PATTERN',
+            memoryKey: `emotion:anxiety_trigger:${slug}`,
+            memoryValue: `anxiety|${triggerContent}`,
+            confidence: this.HEURISTIC_CONFIDENCE,
+          });
+          break;
+        }
+      }
+    }
+
+    // -------------------------------------------------------------------------
+    // 7. Additional: Happiness Triggers (specific things that make user happy)
+    // -------------------------------------------------------------------------
+    
+    for (const pattern of this.emotionalPatterns.happiness_triggers) {
+      const patternIndex = textLower.indexOf(pattern);
+      if (patternIndex !== -1) {
+        const afterPattern = textLower.substring(patternIndex + pattern.length).trim();
+        const triggerContent = this.extractStressTriggerDetail(afterPattern);
+        
+        if (triggerContent && triggerContent.length >= 3) {
+          const slug = this.slugify(triggerContent);
+          candidates.push({
+            type: 'EMOTIONAL_PATTERN',
+            memoryKey: `emotion:happiness_trigger:${slug}`,
+            memoryValue: `happiness|${triggerContent}`,
+            confidence: this.HEURISTIC_CONFIDENCE,
+          });
+          break;
+        }
+      }
+    }
+
+    return candidates;
+  }
+
+  /**
+   * Extract detail about a stress/anxiety/happiness trigger.
+   * Takes the content after the trigger pattern and extracts meaningful detail.
+   */
+  private extractStressTriggerDetail(text: string): string | null {
+    const cleaned = text.replace(/^[\s,.:;]+/, '').trim();
+    
+    // Stop at sentence boundaries or certain conjunctions
+    const endMarkers = ['.', '!', '?', ',', 'and', 'but', 'because', 'so'];
+    let endIndex = cleaned.length;
+    
+    for (const marker of endMarkers) {
+      const idx = cleaned.indexOf(marker);
+      if (idx !== -1 && idx < endIndex) {
+        endIndex = idx;
+      }
+    }
+    
+    const content = cleaned.substring(0, endIndex).trim();
+    
+    // Limit to 8 words max
+    const words = content.split(/\s+/).slice(0, 8);
+    const result = words.join(' ').toLowerCase();
+    
+    return result.length > 2 ? result : null;
   }
 
   /**

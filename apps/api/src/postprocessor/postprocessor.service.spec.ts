@@ -1,5 +1,5 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { PostProcessorService, EmojiFreq, MsgLengthPref, PostProcessorInput } from './postprocessor.service';
+import { PostProcessorService, PostProcessorInput } from './postprocessor.service';
 import { PrismaService } from '../prisma/prisma.service';
 
 /**
@@ -8,11 +8,14 @@ import { PrismaService } from '../prisma/prisma.service';
  * TEST GATE #7 — Behavior enforcement (MANDATORY)
  * 
  * Tests AI_PIPELINE.md §10 (Stage F — Post-Processing & Quality Gates):
+ * Safety-critical constraints only (style enforcement removed):
  * - §10.1 Personal Fact Count (anti-creepiness)
  * - §10.2 Repeated Opener Detection
  * - §10.3 Similarity Measure for Anti-Repetition (3-gram Jaccard)
- * - §10.4 Emoji Band Enforcement
- * - §10.5 Sentence Length Bias Enforcement
+ * - Relationship Intimacy Cap
+ * 
+ * NOTE: Style parameters (emoji_freq, msg_length_pref) are NOT enforced here.
+ * They are guidance for the LLM prompt, not hard post-processing constraints.
  * 
  * Per task requirement:
  * "DETERMINISM: post-processing MUST NOT call any LLM or external service;
@@ -26,8 +29,6 @@ function buildTestInput(overrides: Partial<PostProcessorInput> = {}): PostProces
   return {
     draftContent: 'Hello, how are you today?',
     conversationId: 'test-conv-id',
-    emojiFreq: 'light',
-    msgLengthPref: 'medium',
     surfacedMemoryIds: [],
     userMessage: 'hey there',
     isRetention: false,
@@ -218,84 +219,9 @@ describe('PostProcessorService', () => {
     });
   });
 
-  describe('process - TEST GATE #7.2: Emoji band enforcement', () => {
-    /**
-     * TEST GATE #7 Requirement 2:
-     * "Given persona emoji_freq constraints + an assistant draft with too many emojis,
-     *  postprocessor clamps to allowed range deterministically."
-     */
-    it('should remove all emojis when emoji_freq is "none"', async () => {
-      (prismaService.message.findMany as jest.Mock).mockResolvedValue([]);
-
-      const result = await service.process(buildTestInput({
-        draftContent: 'Hey! 😊 How are you? 🎉 Great!',
-        emojiFreq: 'none',
-      }));
-
-      // emoji_freq=none: MUST be 0 emojis
-      const emojiCount = service.countEmojis(result.content);
-      expect(emojiCount).toBe(0);
-      expect(result.violations).toContain('EMOJI_BAND_VIOLATION');
-    });
-
-    it('should clamp to [0, 2] when emoji_freq is "light" and has more than 2 emojis', async () => {
-      (prismaService.message.findMany as jest.Mock).mockResolvedValue([]);
-
-      const result = await service.process(buildTestInput({
-        draftContent: 'Hey! 😊😊😊😊😊 How are you?', // 5 emojis
-        emojiFreq: 'light',
-      }));
-
-      // emoji_freq=light: MUST be in [0, 2]
-      const emojiCount = service.countEmojis(result.content);
-      expect(emojiCount).toBeGreaterThanOrEqual(0);
-      expect(emojiCount).toBeLessThanOrEqual(2);
-      expect(result.violations).toContain('EMOJI_BAND_VIOLATION');
-    });
-
-    it('should clamp to [1, 6] when emoji_freq is "frequent" and has 0 emojis', async () => {
-      (prismaService.message.findMany as jest.Mock).mockResolvedValue([]);
-
-      const result = await service.process(buildTestInput({
-        draftContent: 'Hey! How are you doing today?', // 0 emojis
-        emojiFreq: 'frequent',
-      }));
-
-      // emoji_freq=frequent: MUST be in [1, 6]
-      const emojiCount = service.countEmojis(result.content);
-      expect(emojiCount).toBeGreaterThanOrEqual(1);
-      expect(emojiCount).toBeLessThanOrEqual(6);
-      expect(result.violations).toContain('EMOJI_BAND_VIOLATION');
-    });
-
-    it('should clamp to [1, 6] when emoji_freq is "frequent" and has more than 6 emojis', async () => {
-      (prismaService.message.findMany as jest.Mock).mockResolvedValue([]);
-
-      const result = await service.process(buildTestInput({
-        draftContent: '😊😊😊😊😊😊😊😊 Hey!', // 8 emojis
-        emojiFreq: 'frequent',
-      }));
-
-      // emoji_freq=frequent: MUST be in [1, 6]
-      const emojiCount = service.countEmojis(result.content);
-      expect(emojiCount).toBeGreaterThanOrEqual(1);
-      expect(emojiCount).toBeLessThanOrEqual(6);
-      expect(result.violations).toContain('EMOJI_BAND_VIOLATION');
-    });
-
-    it('should NOT modify content when emoji count is within band', async () => {
-      (prismaService.message.findMany as jest.Mock).mockResolvedValue([]);
-
-      const originalContent = 'Hey! 😊 How are you?'; // 1 emoji, within light [0,2]
-      const result = await service.process(buildTestInput({
-        draftContent: originalContent,
-        emojiFreq: 'light',
-      }));
-
-      // No emoji violation
-      expect(result.violations).not.toContain('EMOJI_BAND_VIOLATION');
-    });
-  });
+  // NOTE: Emoji band enforcement tests removed.
+  // Style parameters (emoji_freq) are now handled via LLM prompt guidance,
+  // not post-processing enforcement. This avoids excessive fallbacks.
 
   describe('process - Message similarity (§10.3)', () => {
     /**
@@ -349,7 +275,6 @@ describe('PostProcessorService', () => {
 
       const input = buildTestInput({
         draftContent: 'Hey! 😊😊😊 How are you doing today?',
-        emojiFreq: 'light' as EmojiFreq,
       });
 
       const result1 = await service.process(input);
@@ -426,35 +351,9 @@ describe('PostProcessorService', () => {
     });
   });
 
-  describe('process - TEST GATE #7.4: Sentence length enforcement (§10.5)', () => {
-    /**
-     * Per AI_PIPELINE.md §10.5:
-     * - short: sentence_count in [1, 3] AND avg_words_per_sentence <= 14
-     * - medium: sentence_count in [2, 5] AND avg_words_per_sentence in [10, 22]
-     * - long: sentence_count in [3, 8] AND avg_words_per_sentence >= 15
-     */
-    it('should detect violation when too many sentences for short preference', async () => {
-      (prismaService.message.findMany as jest.Mock).mockResolvedValue([]);
-
-      const result = await service.process(buildTestInput({
-        draftContent: 'First sentence. Second sentence. Third sentence. Fourth sentence. Fifth sentence.',
-        msgLengthPref: 'short',
-      }));
-
-      expect(result.violations).toContain('SENTENCE_LENGTH_VIOLATION');
-    });
-
-    it('should NOT detect violation when sentence count is within band', async () => {
-      (prismaService.message.findMany as jest.Mock).mockResolvedValue([]);
-
-      const result = await service.process(buildTestInput({
-        draftContent: 'Hey there! How are you?',
-        msgLengthPref: 'short',
-      }));
-
-      expect(result.violations).not.toContain('SENTENCE_LENGTH_VIOLATION');
-    });
-  });
+  // NOTE: Sentence length enforcement tests removed.
+  // Style parameters (msg_length_pref) are now handled via LLM prompt guidance,
+  // not post-processing enforcement. This avoids excessive fallbacks.
 
   describe('computeSentenceMetrics', () => {
     it('should count sentences correctly', () => {

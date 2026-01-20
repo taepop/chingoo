@@ -88,7 +88,7 @@ export default function LoginScreen() {
 
         {/* Form */}
         <View style={styles.form}>
-          <Text style={styles.title}>Welcome back</Text>
+          <Text style={styles.title}>Go talk with your friend!</Text>
           <Text style={styles.subtitle}>Sign in to continue</Text>
 
           {/* Error display */}

@@ -14,10 +14,16 @@ export type MsgLengthPref = 'short' | 'medium' | 'long';
 
 /**
  * Violation types detected during post-processing per AI_PIPELINE.md §10
+ * 
+ * NOTE: Style violations (emoji, sentence length) are NOT enforced here.
+ * Style parameters (emoji_freq, msg_length_pref, humor_mode, etc.) are
+ * guidance for the LLM prompt, not hard constraints. Only safety-critical
+ * violations are enforced via post-processing:
+ * - Anti-repetition (opener and similarity)
+ * - Personal fact count (anti-creepiness)
+ * - Intimacy cap violations
  */
 export type ViolationType =
-  | 'EMOJI_BAND_VIOLATION'
-  | 'SENTENCE_LENGTH_VIOLATION'
   | 'OPENER_REPETITION'
   | 'MESSAGE_SIMILARITY'
   | 'PERSONAL_FACT_VIOLATION'
@@ -25,16 +31,16 @@ export type ViolationType =
 
 /**
  * PostProcessor input
+ * 
+ * NOTE: Style parameters (emoji_freq, msg_length_pref) are NOT included here.
+ * Style is handled via LLM prompt guidance, not post-processing enforcement.
+ * Post-processor only enforces safety-critical constraints.
  */
 export interface PostProcessorInput {
   /** Draft assistant message content */
   draftContent: string;
   /** Conversation ID for fetching recent assistant messages */
   conversationId: string;
-  /** emoji_freq from StableStyleParams */
-  emojiFreq: EmojiFreq;
-  /** msg_length_pref from StableStyleParams per AI_PIPELINE.md §10.5 */
-  msgLengthPref: MsgLengthPref;
   /** Relationship stage for intimacy cap enforcement */
   relationshipStage?: RelationshipStage;
   /** Memory IDs surfaced in this response per AI_PIPELINE.md §10.1 */
@@ -151,16 +157,16 @@ const SAFE_FALLBACKS: Record<string, string> = {
 /**
  * PostProcessorService
  * 
- * Implements AI_PIPELINE.md §10 (Stage F — Post-Processing & Quality Gates):
+ * Implements AI_PIPELINE.md §10 (Stage F — Post-Processing & Quality Gates)
+ * for SAFETY-CRITICAL constraints only:
  * - §10.1 Personal Fact Count (anti-creepiness)
  * - §10.2 Repeated Opener Detection
  * - §10.3 Similarity Measure for Anti-Repetition (3-gram Jaccard)
- * - §10.4 Emoji Band Enforcement
- * - §10.5 Sentence Length Bias Enforcement
- * - §10 general: Rewrite Pass (one LLM call max on violations)
+ * - Relationship Intimacy Cap enforcement
  * 
- * Per AI_PIPELINE.md §16:
- * "PostProcessor must be the final enforcement point for persona constraints"
+ * STYLE PARAMETERS (emoji_freq, msg_length_pref, humor_mode, etc.) are
+ * NOT enforced here. They are handled via LLM prompt guidance in llm.service.ts.
+ * This approach avoids excessive fallbacks and preserves natural responses.
  */
 @Injectable()
 export class PostProcessorService {
@@ -180,14 +186,14 @@ export class PostProcessorService {
    * This MUST be called BEFORE assistant message persistence.
    * The stored assistant message content MUST be the post-processed output.
    * 
-   * Quality Gates Implemented (per AI_PIPELINE.md §10):
+   * Safety Gates Implemented (only safety-critical constraints):
    * 1. Personal Fact Count (§10.1) - anti-creepiness
    * 2. Repeated Opener Detection (§10.2)
    * 3. Similarity Measure for Anti-Repetition (§10.3)
-   * 4. Emoji Band Enforcement (§10.4)
-   * 5. Sentence Length Bias Enforcement (§10.5)
-   * 6. Relationship Intimacy Cap
-   * 7. Rewrite Pass on violations (single LLM call max)
+   * 4. Relationship Intimacy Cap
+   * 
+   * STYLE PARAMETERS (emoji, sentence length) are NOT enforced here.
+   * They guide the LLM via prompt, not via post-processing.
    * 
    * @param input - PostProcessor input with draft content and constraints
    * @returns PostProcessorResult with final content and opener_norm
@@ -241,21 +247,7 @@ export class PostProcessorService {
       }
     }
 
-    // Step 6: Emoji band enforcement per AI_PIPELINE.md §10.4
-    const emojiCount = this.countEmojis(content);
-    const emojiBand = EMOJI_BANDS[input.emojiFreq];
-
-    if (emojiCount < emojiBand.min || emojiCount > emojiBand.max) {
-      violations.push('EMOJI_BAND_VIOLATION');
-    }
-
-    // Step 7: Sentence Length Bias Enforcement per AI_PIPELINE.md §10.5
-    const sentenceLengthViolation = this.checkSentenceLengthBand(content, input.msgLengthPref);
-    if (sentenceLengthViolation) {
-      violations.push('SENTENCE_LENGTH_VIOLATION');
-    }
-
-    // Step 8: Relationship intimacy cap enforcement per AI_PIPELINE.md §10
+    // Step 6: Relationship intimacy cap enforcement per AI_PIPELINE.md §10
     // "Relationship intimacy cap: STRANGER: avoid overly intimate language"
     if (input.relationshipStage) {
       const intimacyViolation = this.checkIntimacyCap(content, input.relationshipStage);
@@ -264,15 +256,13 @@ export class PostProcessorService {
       }
     }
 
-    // Step 9: If violations detected, perform SINGLE rewrite pass per AI_PIPELINE.md §10
-    // "perform a single constrained rewrite pass (one extra LLM call max)"
+    // Step 7: If violations detected, perform SINGLE rewrite pass
+    // Only for safety-critical violations (repetition, intimacy)
     if (violations.length > 0) {
       this.logger.debug(`Post-processor detected violations: ${violations.join(', ')}`);
       
       // Try deterministic rewrites first for simple violations
       content = this.applyDeterministicRewrites(content, violations, {
-        emojiFreq: input.emojiFreq,
-        msgLengthPref: input.msgLengthPref,
         relationshipStage: input.relationshipStage,
         recentOpenerNorms,
       });
@@ -280,8 +270,6 @@ export class PostProcessorService {
 
       // Recompute violation checks after deterministic rewrites
       const postRewriteViolations = this.computeRemainingViolations(content, {
-        emojiFreq: input.emojiFreq,
-        msgLengthPref: input.msgLengthPref,
         relationshipStage: input.relationshipStage,
         recentOpenerNorms,
         recentContentNorms,
@@ -301,15 +289,12 @@ export class PostProcessorService {
 
           // Final validation after LLM rewrite
           const finalViolations = this.computeRemainingViolations(content, {
-            emojiFreq: input.emojiFreq,
-            msgLengthPref: input.msgLengthPref,
             relationshipStage: input.relationshipStage,
             recentOpenerNorms,
             recentContentNorms,
           });
 
-          // If still failing, fall back to safe response per AI_PIPELINE.md §10
-          // "if still failing, fall back to a safe, shorter response"
+          // If still failing, fall back to safe response
           if (finalViolations.length > 0) {
             content = this.getSafeFallback(input.pipeline);
             this.logger.warn(`LLM rewrite still has violations, using safe fallback`);
@@ -445,24 +430,11 @@ export class PostProcessorService {
     content: string,
     violations: ViolationType[],
     params: {
-      emojiFreq: EmojiFreq;
-      msgLengthPref: MsgLengthPref;
       relationshipStage?: RelationshipStage;
       recentOpenerNorms: string[];
     },
   ): string {
     let rewritten = content;
-
-    // Handle emoji band violation
-    if (violations.includes('EMOJI_BAND_VIOLATION')) {
-      const emojiCount = this.countEmojis(rewritten);
-      rewritten = this.enforceEmojiBand(rewritten, params.emojiFreq, emojiCount);
-    }
-
-    // Handle sentence length violation
-    if (violations.includes('SENTENCE_LENGTH_VIOLATION')) {
-      rewritten = this.enforceSentenceLengthBand(rewritten, params.msgLengthPref);
-    }
 
     // Handle opener repetition
     if (violations.includes('OPENER_REPETITION')) {
@@ -483,31 +455,17 @@ export class PostProcessorService {
   }
 
   /**
-   * Compute remaining violations after rewrite
+   * Compute remaining violations after rewrite (safety-critical only)
    */
   private computeRemainingViolations(
     content: string,
     params: {
-      emojiFreq: EmojiFreq;
-      msgLengthPref: MsgLengthPref;
       relationshipStage?: RelationshipStage;
       recentOpenerNorms: string[];
       recentContentNorms: string[];
     },
   ): ViolationType[] {
     const violations: ViolationType[] = [];
-
-    // Check emoji band
-    const emojiCount = this.countEmojis(content);
-    const emojiBand = EMOJI_BANDS[params.emojiFreq];
-    if (emojiCount < emojiBand.min || emojiCount > emojiBand.max) {
-      violations.push('EMOJI_BAND_VIOLATION');
-    }
-
-    // Check sentence length band
-    if (this.checkSentenceLengthBand(content, params.msgLengthPref)) {
-      violations.push('SENTENCE_LENGTH_VIOLATION');
-    }
 
     // Check opener repetition
     const openerNorm = this.computeOpenerNorm(content);
@@ -585,36 +543,17 @@ export class PostProcessorService {
   }
 
   /**
-   * Build rewrite prompt for LLM
+   * Build rewrite prompt for LLM (safety violations only)
    */
   private buildRewritePrompt(
     originalContent: string,
     violations: ViolationType[],
-    input: PostProcessorInput,
+    _input: PostProcessorInput,
   ): string {
     const violationDescriptions: string[] = [];
 
     for (const violation of violations) {
       switch (violation) {
-        case 'EMOJI_BAND_VIOLATION': {
-          const count = this.countEmojis(originalContent);
-          const band = EMOJI_BANDS[input.emojiFreq];
-          if (count > band.max) {
-            violationDescriptions.push(`- Emoji count is ${count}, must be at most ${band.max} (emoji_freq=${input.emojiFreq})`);
-          } else {
-            violationDescriptions.push(`- Emoji count is ${count}, must be at least ${band.min} (emoji_freq=${input.emojiFreq})`);
-          }
-          break;
-        }
-        case 'SENTENCE_LENGTH_VIOLATION': {
-          const metrics = this.computeSentenceMetrics(originalContent);
-          const band = SENTENCE_LENGTH_BANDS[input.msgLengthPref];
-          violationDescriptions.push(
-            `- Sentence count is ${metrics.sentenceCount}, should be ${band.sentenceCount.min}-${band.sentenceCount.max} ` +
-            `AND avg words/sentence is ${metrics.avgWordsPerSentence}, should be ${band.avgWords.min === 0 ? '0' : band.avgWords.min}-${band.avgWords.max === Infinity ? 'any' : band.avgWords.max} (msg_length_pref=${input.msgLengthPref})`,
-          );
-          break;
-        }
         case 'OPENER_REPETITION':
           violationDescriptions.push('- Opening phrase is too similar to recent messages. Use a different start.');
           break;

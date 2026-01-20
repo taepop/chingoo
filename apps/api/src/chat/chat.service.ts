@@ -12,7 +12,7 @@ import { TraceService } from '../trace/trace.service';
 import { RouterService, RouterDecision, HeuristicFlags } from '../router/router.service';
 import { TopicMatchService, TopicMatchResult } from '../topicmatch/topicmatch.service';
 import { MemoryService } from '../memory/memory.service';
-import { PostProcessorService, EmojiFreq, MsgLengthPref } from '../postprocessor/postprocessor.service';
+import { PostProcessorService } from '../postprocessor/postprocessor.service';
 import { LlmService, LlmGenerationContext } from '../llm/llm.service';
 import { RelationshipService } from '../relationship/relationship.service';
 import { PersonaService } from '../persona/persona.service';
@@ -645,7 +645,7 @@ export class ChatService {
     // Loading 40 messages (20 from user, 20 from AI) for better context
     const conversationHistory = await this.getRecentConversationHistory(
       dto.conversation_id,
-      40, // Last 40 messages for full context
+      20, // Last 40 messages for full context
     );
 
     // Fetch surfaced memory details for personalization
@@ -668,6 +668,31 @@ export class ChatService {
     // Parse stableStyleParams for LLM context
     const stableStyleParams = this.parseStableStyleParams(conversation.aiFriend?.stableStyleParams);
 
+    // Fetch onboarding info for LLM context personalization
+    // This is always included in the prompt so the AI knows basic facts about the user
+    const onboardingData = await this.prisma.userOnboardingAnswers.findUnique({
+      where: { userId },
+      select: {
+        preferredName: true,
+        ageBand: true,
+        occupationCategory: true,
+        countryOrRegion: true,
+      },
+    });
+    
+    const userControls = await this.prisma.userControls.findUnique({
+      where: { userId },
+      select: { suppressedTopics: true },
+    });
+    
+    const onboardingInfo = onboardingData ? {
+      preferredName: onboardingData.preferredName,
+      ageBand: onboardingData.ageBand,
+      occupationCategory: onboardingData.occupationCategory,
+      countryOrRegion: onboardingData.countryOrRegion,
+      suppressedTopics: (userControls?.suppressedTopics as string[]) || [],
+    } : undefined;
+
     // Q13: Generate AI response using real LLM call
     // Per AI_PIPELINE.md §7.1 step 7: "LLM call"
     // CRITICAL: This call happens BEFORE the transaction to preserve idempotency.
@@ -687,6 +712,7 @@ export class ChatService {
           value: m.memoryValue,
         })),
         relationshipStage,
+        onboardingInfo,
       };
       
       draftContent = await this.llmService.generate(llmContext);
@@ -702,15 +728,13 @@ export class ChatService {
     }
 
     // Q12: Post-process the draft content BEFORE persistence
-    // Per AI_PIPELINE.md §10: "PostProcessor must be the final enforcement point"
+    // Per AI_PIPELINE.md §10: Post-processor handles safety-critical constraints
+    // (repetition, personal facts, intimacy) - NOT style (emoji, length)
+    // Style is handled via LLM prompt guidance in llm.service.ts
     // CRITICAL ORDER INVARIANT: This MUST happen BEFORE INSERT
-    const emojiFreq = this.getEmojiFreqFromStableStyleParams(conversation.aiFriend?.stableStyleParams);
-    const msgLengthPref = this.getMsgLengthPrefFromStableStyleParams(conversation.aiFriend?.stableStyleParams);
     const postProcessResult = await this.postProcessorService.process({
       draftContent,
       conversationId: dto.conversation_id,
-      emojiFreq,
-      msgLengthPref,
       relationshipStage,
       surfacedMemoryIds,
       userMessage: dto.user_message,
@@ -974,64 +998,6 @@ export class ChatService {
   private isValidUUID(str: string): boolean {
     const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
     return uuidRegex.test(str);
-  }
-
-  /**
-   * Extract emoji_freq from StableStyleParams.
-   * 
-   * Per AI_PIPELINE.md §2.4 StableStyleParams:
-   * emoji_freq = none | light | frequent
-   * 
-   * Per AI_PIPELINE.md §10.4 Emoji Band Enforcement:
-   * Used to determine emoji limits in post-processing.
-   * 
-   * @param stableStyleParams - JSON params from ai_friends table
-   * @returns EmojiFreq value, defaults to 'light' if not specified
-   */
-  private getEmojiFreqFromStableStyleParams(
-    stableStyleParams: Prisma.JsonValue | null | undefined,
-  ): EmojiFreq {
-    if (!stableStyleParams || typeof stableStyleParams !== 'object') {
-      return 'light'; // Default per task
-    }
-
-    const params = stableStyleParams as Record<string, unknown>;
-    const emojiFreq = params.emoji_freq;
-
-    if (emojiFreq === 'none' || emojiFreq === 'light' || emojiFreq === 'frequent') {
-      return emojiFreq;
-    }
-
-    return 'light'; // Default
-  }
-
-  /**
-   * Extract msg_length_pref from StableStyleParams.
-   * 
-   * Per AI_PIPELINE.md §2.4 StableStyleParams:
-   * msg_length_pref = short | medium | long
-   * 
-   * Per AI_PIPELINE.md §10.5 Sentence Length Bias Enforcement:
-   * Used to determine sentence length constraints in post-processing.
-   * 
-   * @param stableStyleParams - JSON params from ai_friends table
-   * @returns MsgLengthPref value, defaults to 'medium' if not specified
-   */
-  private getMsgLengthPrefFromStableStyleParams(
-    stableStyleParams: Prisma.JsonValue | null | undefined,
-  ): MsgLengthPref {
-    if (!stableStyleParams || typeof stableStyleParams !== 'object') {
-      return 'medium'; // Default per task
-    }
-
-    const params = stableStyleParams as Record<string, unknown>;
-    const msgLengthPref = params.msg_length_pref;
-
-    if (msgLengthPref === 'short' || msgLengthPref === 'medium' || msgLengthPref === 'long') {
-      return msgLengthPref;
-    }
-
-    return 'medium'; // Default
   }
 
   /**
