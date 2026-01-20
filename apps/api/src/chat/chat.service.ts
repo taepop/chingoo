@@ -12,7 +12,7 @@ import { TraceService } from '../trace/trace.service';
 import { RouterService, RouterDecision, HeuristicFlags } from '../router/router.service';
 import { TopicMatchService, TopicMatchResult } from '../topicmatch/topicmatch.service';
 import { MemoryService } from '../memory/memory.service';
-import { PostProcessorService, EmojiFreq } from '../postprocessor/postprocessor.service';
+import { PostProcessorService, EmojiFreq, MsgLengthPref } from '../postprocessor/postprocessor.service';
 import { LlmService, LlmGenerationContext } from '../llm/llm.service';
 import { RelationshipService } from '../relationship/relationship.service';
 import { PersonaService } from '../persona/persona.service';
@@ -265,32 +265,129 @@ export class ChatService {
    * Compute heuristic flags from normalized text.
    * Per AI_PIPELINE.md §5 - Preprocess triggers for memory extraction.
    * Per AI_PIPELINE.md §6.5 - Intent routing flags.
+   * 
+   * EXPANDED: Much more comprehensive trigger detection for better memory capture.
    */
   private computeHeuristicFlags(normNoPunct: string): HeuristicFlags {
     const textLower = normNoPunct.toLowerCase();
 
-    // Preference patterns per AI_PIPELINE.md §5
-    const has_preference_trigger = ['i like', 'i love', 'i hate', 'my favorite'].some(
-      p => textLower.includes(p)
-    );
+    // ============================================================================
+    // PREFERENCE TRIGGERS - Expanded to catch many ways users express preferences
+    // ============================================================================
+    const preferencePatterns = [
+      // Positive preferences
+      'i like', 'i love', 'i enjoy', 'i adore', "i'm into", 'im into',
+      'my favorite', 'my fav', "i'm a fan of", 'im a fan of', 'i prefer',
+      "i'm obsessed with", 'im obsessed with', "i'm really into", 'im really into',
+      "i'm passionate about", 'im passionate about', 'i appreciate',
+      // Negative preferences
+      'i hate', 'i dislike', "i can't stand", 'cant stand', "i don't like", 'dont like',
+      "i'm not a fan of", 'im not a fan of', "i'm not into", 'im not into', 'i avoid',
+      // Korean
+      '좋아', '사랑해', '최애', '싫어', '별로',
+    ];
+    const has_preference_trigger = preferencePatterns.some(p => textLower.includes(p));
 
-    // Fact patterns per AI_PIPELINE.md §5
-    const has_fact_trigger = ["i'm from", 'im from', 'i live in', 'my job is', "i'm a", 'im a'].some(
-      p => textLower.includes(p)
-    );
+    // ============================================================================
+    // FACT TRIGGERS - Massively expanded for personal information capture
+    // ============================================================================
+    const factPatterns = [
+      // Location patterns
+      "i'm from", 'im from', 'i come from', 'i live in', 'i moved to', 'i grew up in',
+      'i was raised in', 'originally from', "i'm based in", 'im based in', 'my hometown',
+      // Occupation/Work patterns
+      'my job is', "i'm a", 'im a', 'i work at', 'i work for', 'i work as', 'i work in',
+      'my company', 'my boss', 'my coworker', 'my colleague', 'my role is', 'my position',
+      'i got a job', 'i joined', "i'm employed", 'im employed',
+      // Education patterns
+      'i study at', 'i go to', 'my school', 'my university', 'my college', 'i attend',
+      'i major in', 'my major is', "i'm studying", 'im studying', 'my degree',
+      'i graduated', "i'm a freshman", "i'm a sophomore", "i'm a junior", "i'm a senior",
+      // Personal details
+      'my birthday', 'born in', 'born on', 'i was born', 'my age is', 'years old',
+      'my name is', 'call me', "i'm called", 'im called', 'my nickname',
+      // Pets
+      'my dog', 'my cat', 'my pet', "dog's name", "cat's name", "pet's name",
+      'i have a dog', 'i have a cat', 'i have a pet', 'my puppy', 'my kitten',
+      // Family
+      'my mom', 'my dad', 'my mother', 'my father', 'my sister', 'my brother',
+      'my grandma', 'my grandpa', 'my grandmother', 'my grandfather',
+      'my husband', 'my wife', 'my spouse', 'my partner',
+      'my son', 'my daughter', 'my kid', 'my child', 'my kids', 'my children',
+      // Relationships
+      "i'm single", 'im single', "i'm married", 'im married', "i'm dating", 'im dating',
+      'my boyfriend', 'my girlfriend', 'my bf', 'my gf', 'my best friend', 'my friend',
+      "i'm seeing", 'im seeing', 'i have a boyfriend', 'i have a girlfriend',
+      // Health/Physical
+      "i'm allergic", 'im allergic', "i'm vegan", 'im vegan', "i'm vegetarian", 'im vegetarian',
+      "i don't eat", 'dont eat', "i can't eat", 'cant eat', 'my allergy',
+      "i'm tall", 'im tall', "i'm short", 'im short', 'my height',
+      // Skills/Abilities
+      'i can', 'i know how to', "i'm good at", 'im good at', 'my skill',
+      'i speak', "i'm fluent in", 'im fluent in', "i'm learning", 'im learning',
+      'i play', 'i can play', 'my instrument',
+      // Possessions
+      'i drive a', 'my car', 'i have a car', 'i own', 'my phone', 'my laptop', 'my computer',
+      // Routines
+      'i wake up at', 'i sleep at', 'i go to bed', 'every morning i', 'every day i',
+      'i usually', 'i always', 'i tend to', 'my routine', 'on weekends i',
+      // Generic personal markers
+      "i'm ", 'im ', 'my ', 'i have ',
+      // Korean
+      '나는', '저는', '제', '내',
+    ];
+    const has_fact_trigger = factPatterns.some(p => textLower.includes(p));
 
-    // Event patterns per AI_PIPELINE.md §5
-    const has_event_trigger = ['i broke up', 'my exam', "i'm traveling", 'im traveling', 'interview'].some(
-      p => textLower.includes(p)
-    );
+    // ============================================================================
+    // EVENT TRIGGERS - Expanded for life events, milestones, activities
+    // ============================================================================
+    const eventPatterns = [
+      // Past events
+      'i went to', 'i visited', 'i attended', 'i saw', 'i watched', 'i met',
+      'yesterday i', 'last week i', 'last month i', 'recently i', 'i just',
+      'i finally', 'i hung out with', 'i talked to',
+      // Upcoming events
+      "i'm going to", 'im going to', 'i will', "i'm planning to", 'im planning to',
+      'next week i', 'tomorrow i', 'soon i will', "i'm about to", 'im about to',
+      // Milestones/Achievements
+      'i graduated', 'i got promoted', 'i passed', 'i won', 'i achieved', 'i completed',
+      'i finished', 'i earned', 'i received', 'i got accepted', 'i got engaged',
+      'i got married', 'i had a baby', 'i bought', 'i moved',
+      // Struggles/Challenges
+      "i'm struggling", 'im struggling', "i'm having trouble", 'im having trouble',
+      'i failed', "i didn't get", 'didnt get', 'i lost', 'i broke up',
+      "i'm stressed", 'im stressed', "i'm worried", 'im worried',
+      // Started/Stopped
+      'i started', 'i began', "i'm starting", 'im starting', 'i picked up',
+      'i stopped', 'i quit', "i'm quitting", 'im quitting', 'i gave up',
+      "i've been", 'ive been',
+      // Goals/Plans
+      'i want to', 'i wanna', "i'd like to", 'id like to', 'i wish',
+      'i plan to', "i'm planning", 'im planning', 'my plan is', 'my goal is',
+      "i'm trying to", 'im trying to', "i'm working on", 'im working on',
+      "i'm saving for", 'im saving for', "i'm looking for", 'im looking for',
+      'my dream is', 'i hope to',
+      // Original spec patterns
+      'i broke up', 'my exam', "i'm traveling", 'im traveling', 'interview',
+      // Korean
+      '갔어', '했어', '봤어', '만났어', '할 거야', '계획', '꿈',
+    ];
+    const has_event_trigger = eventPatterns.some(p => textLower.includes(p));
 
-    // Correction patterns per AI_PIPELINE.md §5
+    // ============================================================================
+    // CORRECTION TRIGGERS
+    // ============================================================================
     const has_correction_trigger = [
       "that's not true", 'thats not true', "don't remember that", 'dont remember that',
       "don't bring this topic up again", 'dont bring this topic up again',
-      'not true', 'wrong', 'forget that',
+      'not true', 'wrong', 'forget that', "that's wrong", 'thats wrong',
+      'actually no', "that's not right", 'thats not right',
     ].some(p => textLower.includes(p));
 
+    // ============================================================================
+    // OTHER FLAGS (unchanged from original)
+    // ============================================================================
+    
     // Question detection per AI_PIPELINE.md §6.5
     const questionStarters = ['what', 'why', 'how', 'when', 'where', 'explain', 'define'];
     const words = textLower.split(/\s+/);
@@ -545,9 +642,10 @@ export class ChatService {
 
     // Fetch conversation history for LLM context
     // Per AI_PIPELINE.md §9: "Conversation recent turns"
+    // Loading 40 messages (20 from user, 20 from AI) for better context
     const conversationHistory = await this.getRecentConversationHistory(
       dto.conversation_id,
-      6, // Last 6 turns (3 exchanges)
+      40, // Last 40 messages for full context
     );
 
     // Fetch surfaced memory details for personalization
@@ -607,16 +705,24 @@ export class ChatService {
     // Per AI_PIPELINE.md §10: "PostProcessor must be the final enforcement point"
     // CRITICAL ORDER INVARIANT: This MUST happen BEFORE INSERT
     const emojiFreq = this.getEmojiFreqFromStableStyleParams(conversation.aiFriend?.stableStyleParams);
+    const msgLengthPref = this.getMsgLengthPrefFromStableStyleParams(conversation.aiFriend?.stableStyleParams);
     const postProcessResult = await this.postProcessorService.process({
       draftContent,
       conversationId: dto.conversation_id,
       emojiFreq,
+      msgLengthPref,
       relationshipStage,
+      surfacedMemoryIds,
+      userMessage: dto.user_message,
+      isRetention: false, // Normal chat, not retention
+      pipeline: routingDecision.pipeline,
     });
 
     // Use post-processed content and opener_norm for storage
+    // Also use the potentially reduced surfacedMemoryIds (per AI_PIPELINE.md §10.1)
     const assistantContent = postProcessResult.content;
     const openerNorm = postProcessResult.openerNorm;
+    surfacedMemoryIds = postProcessResult.surfacedMemoryIds;
 
     // Execute in transaction per AI_PIPELINE.md §4.1.2 Technical Implementation Note
     const result = await this.prisma.$transaction(async (tx) => {
@@ -897,6 +1003,35 @@ export class ChatService {
     }
 
     return 'light'; // Default
+  }
+
+  /**
+   * Extract msg_length_pref from StableStyleParams.
+   * 
+   * Per AI_PIPELINE.md §2.4 StableStyleParams:
+   * msg_length_pref = short | medium | long
+   * 
+   * Per AI_PIPELINE.md §10.5 Sentence Length Bias Enforcement:
+   * Used to determine sentence length constraints in post-processing.
+   * 
+   * @param stableStyleParams - JSON params from ai_friends table
+   * @returns MsgLengthPref value, defaults to 'medium' if not specified
+   */
+  private getMsgLengthPrefFromStableStyleParams(
+    stableStyleParams: Prisma.JsonValue | null | undefined,
+  ): MsgLengthPref {
+    if (!stableStyleParams || typeof stableStyleParams !== 'object') {
+      return 'medium'; // Default per task
+    }
+
+    const params = stableStyleParams as Record<string, unknown>;
+    const msgLengthPref = params.msg_length_pref;
+
+    if (msgLengthPref === 'short' || msgLengthPref === 'medium' || msgLengthPref === 'long') {
+      return msgLengthPref;
+    }
+
+    return 'medium'; // Default
   }
 
   /**

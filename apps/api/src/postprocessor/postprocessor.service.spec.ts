@@ -1,5 +1,5 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { PostProcessorService, EmojiFreq } from './postprocessor.service';
+import { PostProcessorService, EmojiFreq, MsgLengthPref, PostProcessorInput } from './postprocessor.service';
 import { PrismaService } from '../prisma/prisma.service';
 
 /**
@@ -8,14 +8,34 @@ import { PrismaService } from '../prisma/prisma.service';
  * TEST GATE #7 — Behavior enforcement (MANDATORY)
  * 
  * Tests AI_PIPELINE.md §10 (Stage F — Post-Processing & Quality Gates):
+ * - §10.1 Personal Fact Count (anti-creepiness)
  * - §10.2 Repeated Opener Detection
  * - §10.3 Similarity Measure for Anti-Repetition (3-gram Jaccard)
  * - §10.4 Emoji Band Enforcement
+ * - §10.5 Sentence Length Bias Enforcement
  * 
  * Per task requirement:
  * "DETERMINISM: post-processing MUST NOT call any LLM or external service;
  *  pure deterministic transforms only."
  */
+
+/**
+ * Helper to build a default PostProcessorInput for testing
+ */
+function buildTestInput(overrides: Partial<PostProcessorInput> = {}): PostProcessorInput {
+  return {
+    draftContent: 'Hello, how are you today?',
+    conversationId: 'test-conv-id',
+    emojiFreq: 'light',
+    msgLengthPref: 'medium',
+    surfacedMemoryIds: [],
+    userMessage: 'hey there',
+    isRetention: false,
+    pipeline: 'FRIEND_CHAT',
+    ...overrides,
+  };
+}
+
 describe('PostProcessorService', () => {
   let service: PostProcessorService;
   let prismaService: jest.Mocked<PrismaService>;
@@ -170,11 +190,9 @@ describe('PostProcessorService', () => {
         { content: draftContent, openerNorm: violatingOpenerNorm },
       ]);
 
-      const result = await service.process({
+      const result = await service.process(buildTestInput({
         draftContent,
-        conversationId: 'test-conv-id',
-        emojiFreq: 'light',
-      });
+      }));
 
       // Assert opener_norm differs from the violating one (rewrite happened)
       expect(result.openerNorm).not.toBe(violatingOpenerNorm);
@@ -191,11 +209,9 @@ describe('PostProcessorService', () => {
         { content: 'I understand how you feel', openerNorm: 'i understand how you feel' },
       ]);
 
-      const result = await service.process({
+      const result = await service.process(buildTestInput({
         draftContent: 'Hey! How are you doing today?',
-        conversationId: 'test-conv-id',
-        emojiFreq: 'light',
-      });
+      }));
 
       // No opener repetition violation
       expect(result.violations).not.toContain('OPENER_REPETITION');
@@ -211,11 +227,10 @@ describe('PostProcessorService', () => {
     it('should remove all emojis when emoji_freq is "none"', async () => {
       (prismaService.message.findMany as jest.Mock).mockResolvedValue([]);
 
-      const result = await service.process({
+      const result = await service.process(buildTestInput({
         draftContent: 'Hey! 😊 How are you? 🎉 Great!',
-        conversationId: 'test-conv-id',
         emojiFreq: 'none',
-      });
+      }));
 
       // emoji_freq=none: MUST be 0 emojis
       const emojiCount = service.countEmojis(result.content);
@@ -226,11 +241,10 @@ describe('PostProcessorService', () => {
     it('should clamp to [0, 2] when emoji_freq is "light" and has more than 2 emojis', async () => {
       (prismaService.message.findMany as jest.Mock).mockResolvedValue([]);
 
-      const result = await service.process({
+      const result = await service.process(buildTestInput({
         draftContent: 'Hey! 😊😊😊😊😊 How are you?', // 5 emojis
-        conversationId: 'test-conv-id',
         emojiFreq: 'light',
-      });
+      }));
 
       // emoji_freq=light: MUST be in [0, 2]
       const emojiCount = service.countEmojis(result.content);
@@ -242,11 +256,10 @@ describe('PostProcessorService', () => {
     it('should clamp to [1, 6] when emoji_freq is "frequent" and has 0 emojis', async () => {
       (prismaService.message.findMany as jest.Mock).mockResolvedValue([]);
 
-      const result = await service.process({
+      const result = await service.process(buildTestInput({
         draftContent: 'Hey! How are you doing today?', // 0 emojis
-        conversationId: 'test-conv-id',
         emojiFreq: 'frequent',
-      });
+      }));
 
       // emoji_freq=frequent: MUST be in [1, 6]
       const emojiCount = service.countEmojis(result.content);
@@ -258,11 +271,10 @@ describe('PostProcessorService', () => {
     it('should clamp to [1, 6] when emoji_freq is "frequent" and has more than 6 emojis', async () => {
       (prismaService.message.findMany as jest.Mock).mockResolvedValue([]);
 
-      const result = await service.process({
+      const result = await service.process(buildTestInput({
         draftContent: '😊😊😊😊😊😊😊😊 Hey!', // 8 emojis
-        conversationId: 'test-conv-id',
         emojiFreq: 'frequent',
-      });
+      }));
 
       // emoji_freq=frequent: MUST be in [1, 6]
       const emojiCount = service.countEmojis(result.content);
@@ -275,11 +287,10 @@ describe('PostProcessorService', () => {
       (prismaService.message.findMany as jest.Mock).mockResolvedValue([]);
 
       const originalContent = 'Hey! 😊 How are you?'; // 1 emoji, within light [0,2]
-      const result = await service.process({
+      const result = await service.process(buildTestInput({
         draftContent: originalContent,
-        conversationId: 'test-conv-id',
         emojiFreq: 'light',
-      });
+      }));
 
       // No emoji violation
       expect(result.violations).not.toContain('EMOJI_BAND_VIOLATION');
@@ -301,11 +312,9 @@ describe('PostProcessorService', () => {
       ]);
 
       // Draft that is nearly identical
-      const result = await service.process({
+      const result = await service.process(buildTestInput({
         draftContent: 'hey there how are you doing today i hope you are well and happy',
-        conversationId: 'test-conv-id',
-        emojiFreq: 'light',
-      });
+      }));
 
       // Should detect similarity violation
       expect(result.violations).toContain('MESSAGE_SIMILARITY');
@@ -320,11 +329,9 @@ describe('PostProcessorService', () => {
         { content: 'I love pizza too, especially pepperoni', openerNorm: 'i love pizza too' },
       ]);
 
-      const result = await service.process({
+      const result = await service.process(buildTestInput({
         draftContent: 'Hey there! How are you doing today?',
-        conversationId: 'test-conv-id',
-        emojiFreq: 'light',
-      });
+      }));
 
       // No similarity violation
       expect(result.violations).not.toContain('MESSAGE_SIMILARITY');
@@ -340,11 +347,10 @@ describe('PostProcessorService', () => {
     it('should produce identical output for identical input (deterministic)', async () => {
       (prismaService.message.findMany as jest.Mock).mockResolvedValue([]);
 
-      const input = {
+      const input = buildTestInput({
         draftContent: 'Hey! 😊😊😊 How are you doing today?',
-        conversationId: 'test-conv-id',
         emojiFreq: 'light' as EmojiFreq,
-      };
+      });
 
       const result1 = await service.process(input);
       const result2 = await service.process(input);
@@ -364,15 +370,108 @@ describe('PostProcessorService', () => {
     it('should return opener_norm in result for storage', async () => {
       (prismaService.message.findMany as jest.Mock).mockResolvedValue([]);
 
-      const result = await service.process({
+      const result = await service.process(buildTestInput({
         draftContent: 'Hey there! How are you doing?',
-        conversationId: 'test-conv-id',
-        emojiFreq: 'light',
-      });
+      }));
 
       expect(result.openerNorm).toBeDefined();
       expect(typeof result.openerNorm).toBe('string');
       expect(result.openerNorm.length).toBeGreaterThan(0);
+    });
+  });
+
+  describe('process - TEST GATE #7.3: Personal fact count (§10.1)', () => {
+    /**
+     * Per AI_PIPELINE.md §10.1:
+     * "do not mention >2 personal facts in one message unless user asked"
+     */
+    it('should detect violation when more than 2 facts surfaced in normal chat', async () => {
+      (prismaService.message.findMany as jest.Mock).mockResolvedValue([]);
+
+      const result = await service.process(buildTestInput({
+        draftContent: 'Hey there! How are you doing today?',
+        surfacedMemoryIds: ['mem1', 'mem2', 'mem3', 'mem4'], // 4 facts
+        isRetention: false,
+      }));
+
+      expect(result.violations).toContain('PERSONAL_FACT_VIOLATION');
+      expect(result.surfacedMemoryIds.length).toBe(2); // Reduced to max 2
+    });
+
+    it('should NOT detect violation when user asked for recall', async () => {
+      (prismaService.message.findMany as jest.Mock).mockResolvedValue([]);
+
+      const result = await service.process(buildTestInput({
+        draftContent: 'Hey there! How are you doing today?',
+        surfacedMemoryIds: ['mem1', 'mem2', 'mem3', 'mem4'], // 4 facts
+        userMessage: 'Do you remember what I told you about my job?',
+        isRetention: false,
+      }));
+
+      expect(result.violations).not.toContain('PERSONAL_FACT_VIOLATION');
+      expect(result.surfacedMemoryIds.length).toBe(4); // Not reduced
+    });
+
+    it('should detect violation when more than 1 fact in retention message', async () => {
+      (prismaService.message.findMany as jest.Mock).mockResolvedValue([]);
+
+      const result = await service.process(buildTestInput({
+        draftContent: 'Hey there! How are you doing today?',
+        surfacedMemoryIds: ['mem1', 'mem2'], // 2 facts
+        isRetention: true,
+      }));
+
+      expect(result.violations).toContain('PERSONAL_FACT_VIOLATION');
+      expect(result.surfacedMemoryIds.length).toBe(1); // Reduced to max 1
+    });
+  });
+
+  describe('process - TEST GATE #7.4: Sentence length enforcement (§10.5)', () => {
+    /**
+     * Per AI_PIPELINE.md §10.5:
+     * - short: sentence_count in [1, 3] AND avg_words_per_sentence <= 14
+     * - medium: sentence_count in [2, 5] AND avg_words_per_sentence in [10, 22]
+     * - long: sentence_count in [3, 8] AND avg_words_per_sentence >= 15
+     */
+    it('should detect violation when too many sentences for short preference', async () => {
+      (prismaService.message.findMany as jest.Mock).mockResolvedValue([]);
+
+      const result = await service.process(buildTestInput({
+        draftContent: 'First sentence. Second sentence. Third sentence. Fourth sentence. Fifth sentence.',
+        msgLengthPref: 'short',
+      }));
+
+      expect(result.violations).toContain('SENTENCE_LENGTH_VIOLATION');
+    });
+
+    it('should NOT detect violation when sentence count is within band', async () => {
+      (prismaService.message.findMany as jest.Mock).mockResolvedValue([]);
+
+      const result = await service.process(buildTestInput({
+        draftContent: 'Hey there! How are you?',
+        msgLengthPref: 'short',
+      }));
+
+      expect(result.violations).not.toContain('SENTENCE_LENGTH_VIOLATION');
+    });
+  });
+
+  describe('computeSentenceMetrics', () => {
+    it('should count sentences correctly', () => {
+      const metrics = service.computeSentenceMetrics('Hello there. How are you? Great!');
+      expect(metrics.sentenceCount).toBe(3);
+    });
+
+    it('should compute average words per sentence', () => {
+      const metrics = service.computeSentenceMetrics('Hello there friend. How are you doing today?');
+      expect(metrics.sentenceCount).toBe(2);
+      expect(metrics.totalWords).toBe(8);
+      expect(metrics.avgWordsPerSentence).toBe(4);
+    });
+
+    it('should handle Korean sentence delimiters', () => {
+      const metrics = service.computeSentenceMetrics('안녕하세요。오늘 어떻게 지내세요？좋아요！');
+      expect(metrics.sentenceCount).toBe(3);
     });
   });
 });

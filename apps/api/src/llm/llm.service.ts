@@ -214,6 +214,10 @@ export class LlmService {
     lines.push('You are a supportive AI friend chatting with a user.');
     lines.push('');
     
+    // Language matching - respond in user's language
+    lines.push('LANGUAGE: Respond in the same language the user uses. If they write in Korean, respond in Korean. If they write in English, respond in English. If they mix languages, match their style.');
+    lines.push('');
+    
     // Safety rules per AI_PIPELINE.md §1.6
     lines.push('CRITICAL RULES:');
     lines.push('- Never generate explicit sexual content, erotica, or sexual roleplay.');
@@ -366,11 +370,11 @@ export class LlmService {
       { role: 'system', content: systemPrompt },
     ];
     
-    // Add conversation history if available (last few turns for context)
+    // Add conversation history if available
+    // Per user request: Load recent 40 messages (20 from user, 20 from AI friend) for full context
     if (context.conversationHistory && context.conversationHistory.length > 0) {
-      // Limit to last 6 turns (3 exchanges) to keep prompt reasonable
-      const recentHistory = context.conversationHistory.slice(-6);
-      for (const turn of recentHistory) {
+      // Use all provided conversation history (up to 40 messages)
+      for (const turn of context.conversationHistory) {
         messages.push({ role: turn.role, content: turn.content });
       }
     }

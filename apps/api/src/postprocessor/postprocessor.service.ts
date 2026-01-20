@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { RelationshipStage } from '@prisma/client';
 
@@ -13,6 +13,17 @@ export type EmojiFreq = 'none' | 'light' | 'frequent';
 export type MsgLengthPref = 'short' | 'medium' | 'long';
 
 /**
+ * Violation types detected during post-processing per AI_PIPELINE.md §10
+ */
+export type ViolationType =
+  | 'EMOJI_BAND_VIOLATION'
+  | 'SENTENCE_LENGTH_VIOLATION'
+  | 'OPENER_REPETITION'
+  | 'MESSAGE_SIMILARITY'
+  | 'PERSONAL_FACT_VIOLATION'
+  | 'INTIMACY_CAP_VIOLATION';
+
+/**
  * PostProcessor input
  */
 export interface PostProcessorInput {
@@ -22,10 +33,18 @@ export interface PostProcessorInput {
   conversationId: string;
   /** emoji_freq from StableStyleParams */
   emojiFreq: EmojiFreq;
-  /** msg_length_pref from StableStyleParams (optional for v0.1) */
-  msgLengthPref?: MsgLengthPref;
+  /** msg_length_pref from StableStyleParams per AI_PIPELINE.md §10.5 */
+  msgLengthPref: MsgLengthPref;
   /** Relationship stage for intimacy cap enforcement */
   relationshipStage?: RelationshipStage;
+  /** Memory IDs surfaced in this response per AI_PIPELINE.md §10.1 */
+  surfacedMemoryIds: string[];
+  /** User's message text for recall detection per AI_PIPELINE.md §10.1 */
+  userMessage: string;
+  /** Whether this is a retention message per AI_PIPELINE.md §10.1 */
+  isRetention?: boolean;
+  /** Pipeline type for safe fallbacks */
+  pipeline?: string;
 }
 
 /**
@@ -37,19 +56,73 @@ export interface PostProcessorResult {
   /** Computed opener_norm for storage */
   openerNorm: string;
   /** List of violations detected */
-  violations: string[];
+  violations: ViolationType[];
   /** Number of rewrite attempts */
   rewriteAttempts: number;
+  /** Surfaced memory IDs (may be reduced if personal_fact_count exceeded) */
+  surfacedMemoryIds: string[];
 }
 
 /**
  * Emoji bands per AI_PIPELINE.md §10.4
+ * - none: emoji_count MUST be 0
+ * - light: emoji_count MUST be in [0, 2]
+ * - frequent: emoji_count MUST be in [1, 6]
  */
 const EMOJI_BANDS: Record<EmojiFreq, { min: number; max: number }> = {
   none: { min: 0, max: 0 },
   light: { min: 0, max: 2 },
   frequent: { min: 1, max: 6 },
 };
+
+/**
+ * Sentence length bands per AI_PIPELINE.md §10.5
+ * 
+ * Limits by StableStyleParams.msg_length_pref:
+ * - short: sentence_count in [1, 3] AND avg_words_per_sentence <= 14
+ * - medium: sentence_count in [2, 5] AND avg_words_per_sentence in [10, 22]
+ * - long: sentence_count in [3, 8] AND avg_words_per_sentence >= 15
+ */
+const SENTENCE_LENGTH_BANDS: Record<
+  MsgLengthPref,
+  {
+    sentenceCount: { min: number; max: number };
+    avgWords: { min: number; max: number };
+  }
+> = {
+  short: {
+    sentenceCount: { min: 1, max: 3 },
+    avgWords: { min: 0, max: 14 },
+  },
+  medium: {
+    sentenceCount: { min: 2, max: 5 },
+    avgWords: { min: 10, max: 22 },
+  },
+  long: {
+    sentenceCount: { min: 3, max: 8 },
+    avgWords: { min: 15, max: Infinity },
+  },
+};
+
+/**
+ * Personal fact limits per AI_PIPELINE.md §10.1
+ * - Normal chat: max 2 facts (unless user asked for recall)
+ * - Retention/proactive messages: max 1 fact only
+ */
+const PERSONAL_FACT_LIMITS = {
+  normalChat: 2,
+  retention: 1,
+};
+
+/**
+ * Regex patterns for detecting user recall requests per AI_PIPELINE.md §10.1
+ * "Unless user asked for recall ('remember', 'you said', 'last time')"
+ */
+const RECALL_REQUEST_PATTERNS = [
+  /\bremember\b/i,
+  /\byou\s+said\b/i,
+  /\blast\s+time\b/i,
+];
 
 /**
  * Similarity threshold per AI_PIPELINE.md §10.3
@@ -63,23 +136,42 @@ const SIMILARITY_THRESHOLD = 0.70;
 const RECENT_MESSAGES_LIMIT = 20;
 
 /**
+ * Safe fallback responses per AI_PIPELINE.md §10 Rewrite Pass
+ * Used when rewrite still fails after one attempt
+ */
+const SAFE_FALLBACKS: Record<string, string> = {
+  FRIEND_CHAT: "That's interesting! Tell me more.",
+  EMOTIONAL_SUPPORT: 'I hear you. That sounds tough.',
+  INFO_QA: "I'm not entirely sure about that.",
+  ONBOARDING_CHAT: "Nice to meet you! What would you like to chat about?",
+  REFUSAL: 'Please complete onboarding before chatting.',
+  DEFAULT: "That's interesting! Tell me more.",
+};
+
+/**
  * PostProcessorService
  * 
  * Implements AI_PIPELINE.md §10 (Stage F — Post-Processing & Quality Gates):
+ * - §10.1 Personal Fact Count (anti-creepiness)
  * - §10.2 Repeated Opener Detection
  * - §10.3 Similarity Measure for Anti-Repetition (3-gram Jaccard)
  * - §10.4 Emoji Band Enforcement
- * 
- * CRITICAL: This service is PURE DETERMINISTIC.
- * - No LLM calls, no network calls, no randomness.
- * - Same input always produces identical output.
+ * - §10.5 Sentence Length Bias Enforcement
+ * - §10 general: Rewrite Pass (one LLM call max on violations)
  * 
  * Per AI_PIPELINE.md §16:
  * "PostProcessor must be the final enforcement point for persona constraints"
  */
 @Injectable()
 export class PostProcessorService {
-  constructor(private prisma: PrismaService) {}
+  private readonly logger = new Logger(PostProcessorService.name);
+  private readonly apiKey: string;
+  private readonly apiUrl = 'https://api.openai.com/v1/chat/completions';
+  private readonly model = 'gpt-4o-mini';
+
+  constructor(private prisma: PrismaService) {
+    this.apiKey = (process.env.LLM_API_KEY || '').trim();
+  }
 
   /**
    * Process assistant draft message per AI_PIPELINE.md §10.
@@ -88,24 +180,43 @@ export class PostProcessorService {
    * This MUST be called BEFORE assistant message persistence.
    * The stored assistant message content MUST be the post-processed output.
    * 
+   * Quality Gates Implemented (per AI_PIPELINE.md §10):
+   * 1. Personal Fact Count (§10.1) - anti-creepiness
+   * 2. Repeated Opener Detection (§10.2)
+   * 3. Similarity Measure for Anti-Repetition (§10.3)
+   * 4. Emoji Band Enforcement (§10.4)
+   * 5. Sentence Length Bias Enforcement (§10.5)
+   * 6. Relationship Intimacy Cap
+   * 7. Rewrite Pass on violations (single LLM call max)
+   * 
    * @param input - PostProcessor input with draft content and constraints
    * @returns PostProcessorResult with final content and opener_norm
    */
   async process(input: PostProcessorInput): Promise<PostProcessorResult> {
-    const violations: string[] = [];
+    const violations: ViolationType[] = [];
     let rewriteAttempts = 0;
     let content = input.draftContent;
+    let surfacedMemoryIds = [...input.surfacedMemoryIds];
 
-    // Step 1: Fetch recent assistant messages for repetition checks
+    // Step 1: Personal Fact Count per AI_PIPELINE.md §10.1
+    // "do not mention >2 personal facts in one message unless user asked"
+    const personalFactViolation = this.checkPersonalFactCount(input);
+    if (personalFactViolation) {
+      violations.push('PERSONAL_FACT_VIOLATION');
+      // Reduce surfacedMemoryIds to the allowed limit
+      surfacedMemoryIds = this.enforcePersonalFactLimit(input);
+    }
+
+    // Step 2: Fetch recent assistant messages for repetition checks
     const recentMessages = await this.getRecentAssistantMessages(
       input.conversationId,
       RECENT_MESSAGES_LIMIT,
     );
 
-    // Step 2: Compute opener_norm per AI_PIPELINE.md §10.2
+    // Step 3: Compute opener_norm per AI_PIPELINE.md §10.2
     let openerNorm = this.computeOpenerNorm(content);
 
-    // Step 3: Check opener repetition per AI_PIPELINE.md §10.2
+    // Step 4: Check opener repetition per AI_PIPELINE.md §10.2
     // "If opener_norm exactly matches any opener_norm from the last 20 assistant messages"
     const recentOpenerNorms = recentMessages
       .map(m => m.openerNorm)
@@ -113,13 +224,9 @@ export class PostProcessorService {
 
     if (recentOpenerNorms.includes(openerNorm)) {
       violations.push('OPENER_REPETITION');
-      // Rewrite opener deterministically
-      content = this.rewriteOpener(content, recentOpenerNorms);
-      openerNorm = this.computeOpenerNorm(content);
-      rewriteAttempts++;
     }
 
-    // Step 4: Check message similarity per AI_PIPELINE.md §10.3
+    // Step 5: Check message similarity per AI_PIPELINE.md §10.3
     // "If similarity with ANY of the last 20 assistant messages is >= 0.70"
     const normNoPunct = this.normalizeNoPunct(content);
     const recentContentNorms = recentMessages.map(m => 
@@ -130,44 +237,468 @@ export class PostProcessorService {
       const similarity = this.computeJaccardSimilarity(normNoPunct, recentNorm);
       if (similarity >= SIMILARITY_THRESHOLD) {
         violations.push('MESSAGE_SIMILARITY');
-        // Rewrite to shorter, different structure
-        content = this.rewriteForDifferentStructure(content);
-        rewriteAttempts++;
-        break; // Only one rewrite pass per AI_PIPELINE.md §10
+        break;
       }
     }
 
-    // Step 5: Emoji band enforcement per AI_PIPELINE.md §10.4
+    // Step 6: Emoji band enforcement per AI_PIPELINE.md §10.4
     const emojiCount = this.countEmojis(content);
-    const band = EMOJI_BANDS[input.emojiFreq];
+    const emojiBand = EMOJI_BANDS[input.emojiFreq];
 
-    if (emojiCount < band.min || emojiCount > band.max) {
+    if (emojiCount < emojiBand.min || emojiCount > emojiBand.max) {
       violations.push('EMOJI_BAND_VIOLATION');
-      content = this.enforceEmojiBand(content, input.emojiFreq, emojiCount);
-      // Recompute opener_norm after emoji changes (emojis stripped anyway)
-      openerNorm = this.computeOpenerNorm(content);
-      rewriteAttempts++;
     }
 
-    // Step 6: Relationship intimacy cap enforcement per AI_PIPELINE.md §10
+    // Step 7: Sentence Length Bias Enforcement per AI_PIPELINE.md §10.5
+    const sentenceLengthViolation = this.checkSentenceLengthBand(content, input.msgLengthPref);
+    if (sentenceLengthViolation) {
+      violations.push('SENTENCE_LENGTH_VIOLATION');
+    }
+
+    // Step 8: Relationship intimacy cap enforcement per AI_PIPELINE.md §10
     // "Relationship intimacy cap: STRANGER: avoid overly intimate language"
     if (input.relationshipStage) {
       const intimacyViolation = this.checkIntimacyCap(content, input.relationshipStage);
       if (intimacyViolation) {
         violations.push('INTIMACY_CAP_VIOLATION');
-        content = this.enforceIntimacyCap(content, input.relationshipStage);
-        // Recompute opener_norm after intimacy adjustments
-        openerNorm = this.computeOpenerNorm(content);
-        rewriteAttempts++;
       }
     }
+
+    // Step 9: If violations detected, perform SINGLE rewrite pass per AI_PIPELINE.md §10
+    // "perform a single constrained rewrite pass (one extra LLM call max)"
+    if (violations.length > 0) {
+      this.logger.debug(`Post-processor detected violations: ${violations.join(', ')}`);
+      
+      // Try deterministic rewrites first for simple violations
+      content = this.applyDeterministicRewrites(content, violations, {
+        emojiFreq: input.emojiFreq,
+        msgLengthPref: input.msgLengthPref,
+        relationshipStage: input.relationshipStage,
+        recentOpenerNorms,
+      });
+      rewriteAttempts++;
+
+      // Recompute violation checks after deterministic rewrites
+      const postRewriteViolations = this.computeRemainingViolations(content, {
+        emojiFreq: input.emojiFreq,
+        msgLengthPref: input.msgLengthPref,
+        relationshipStage: input.relationshipStage,
+        recentOpenerNorms,
+        recentContentNorms,
+      });
+
+      // If still has violations, attempt LLM rewrite (one call max)
+      if (postRewriteViolations.length > 0 && this.apiKey) {
+        const llmRewritten = await this.attemptLlmRewrite(
+          content,
+          postRewriteViolations,
+          input,
+        );
+
+        if (llmRewritten) {
+          content = llmRewritten;
+          rewriteAttempts++;
+
+          // Final validation after LLM rewrite
+          const finalViolations = this.computeRemainingViolations(content, {
+            emojiFreq: input.emojiFreq,
+            msgLengthPref: input.msgLengthPref,
+            relationshipStage: input.relationshipStage,
+            recentOpenerNorms,
+            recentContentNorms,
+          });
+
+          // If still failing, fall back to safe response per AI_PIPELINE.md §10
+          // "if still failing, fall back to a safe, shorter response"
+          if (finalViolations.length > 0) {
+            content = this.getSafeFallback(input.pipeline);
+            this.logger.warn(`LLM rewrite still has violations, using safe fallback`);
+          }
+        } else {
+          // LLM rewrite failed, fall back to safe response
+          content = this.getSafeFallback(input.pipeline);
+          this.logger.warn(`LLM rewrite failed, using safe fallback`);
+        }
+      }
+    }
+
+    // Final opener_norm computation
+    openerNorm = this.computeOpenerNorm(content);
 
     return {
       content,
       openerNorm,
       violations,
       rewriteAttempts,
+      surfacedMemoryIds,
     };
+  }
+
+  /**
+   * Check if personal fact count exceeds limit per AI_PIPELINE.md §10.1
+   * 
+   * Rules:
+   * - Normal chat: max 2 facts (unless user asked for recall)
+   * - Retention/proactive messages: max 1 fact only
+   */
+  private checkPersonalFactCount(input: PostProcessorInput): boolean {
+    const factCount = input.surfacedMemoryIds.length;
+
+    // Check if user asked for recall
+    const userAskedRecall = RECALL_REQUEST_PATTERNS.some(pattern =>
+      pattern.test(input.userMessage),
+    );
+
+    // If user asked for recall, no limit
+    if (userAskedRecall) {
+      return false;
+    }
+
+    // Check retention limit
+    if (input.isRetention) {
+      return factCount > PERSONAL_FACT_LIMITS.retention;
+    }
+
+    // Check normal chat limit
+    return factCount > PERSONAL_FACT_LIMITS.normalChat;
+  }
+
+  /**
+   * Enforce personal fact limit by reducing surfacedMemoryIds
+   * Per AI_PIPELINE.md §10.1: "Reduce surfacedMemoryIds to at most 2"
+   */
+  private enforcePersonalFactLimit(input: PostProcessorInput): string[] {
+    const limit = input.isRetention
+      ? PERSONAL_FACT_LIMITS.retention
+      : PERSONAL_FACT_LIMITS.normalChat;
+
+    // Keep only the first N memories
+    return input.surfacedMemoryIds.slice(0, limit);
+  }
+
+  /**
+   * Check sentence length band per AI_PIPELINE.md §10.5
+   * 
+   * Bands:
+   * - short: sentence_count in [1, 3] AND avg_words_per_sentence <= 14
+   * - medium: sentence_count in [2, 5] AND avg_words_per_sentence in [10, 22]
+   * - long: sentence_count in [3, 8] AND avg_words_per_sentence >= 15
+   */
+  private checkSentenceLengthBand(content: string, msgLengthPref: MsgLengthPref): boolean {
+    const { sentenceCount, avgWordsPerSentence } = this.computeSentenceMetrics(content);
+    const band = SENTENCE_LENGTH_BANDS[msgLengthPref];
+
+    // Check sentence count
+    if (sentenceCount < band.sentenceCount.min || sentenceCount > band.sentenceCount.max) {
+      return true;
+    }
+
+    // Check average words per sentence
+    if (avgWordsPerSentence < band.avgWords.min || avgWordsPerSentence > band.avgWords.max) {
+      return true;
+    }
+
+    return false;
+  }
+
+  /**
+   * Compute sentence metrics for length band enforcement
+   * Per AI_PIPELINE.md §10.5:
+   * - Split on `.`, `!`, `?`, `…`, or Korean `.` equivalents
+   * - Treat consecutive delimiters as one
+   * - Ignore empty segments
+   */
+  computeSentenceMetrics(content: string): {
+    sentenceCount: number;
+    avgWordsPerSentence: number;
+    totalWords: number;
+  } {
+    // Split on sentence-ending punctuation (including Korean equivalents)
+    // Per AI_PIPELINE.md §10.5: Split on `.`, `!`, `?`, `…`, or Korean `.` equivalents
+    const sentenceDelimiters = /[.!?…。？！]+/;
+    const sentences = content
+      .split(sentenceDelimiters)
+      .map(s => s.trim())
+      .filter(s => s.length > 0);
+
+    const sentenceCount = Math.max(1, sentences.length);
+
+    // Count total words (tokenized on whitespace)
+    const totalWords = content
+      .trim()
+      .split(/\s+/)
+      .filter(w => w.length > 0).length;
+
+    const avgWordsPerSentence = sentenceCount > 0 ? totalWords / sentenceCount : 0;
+
+    return {
+      sentenceCount,
+      avgWordsPerSentence: Math.round(avgWordsPerSentence * 100) / 100,
+      totalWords,
+    };
+  }
+
+  /**
+   * Apply deterministic rewrites for violations that don't need LLM
+   */
+  private applyDeterministicRewrites(
+    content: string,
+    violations: ViolationType[],
+    params: {
+      emojiFreq: EmojiFreq;
+      msgLengthPref: MsgLengthPref;
+      relationshipStage?: RelationshipStage;
+      recentOpenerNorms: string[];
+    },
+  ): string {
+    let rewritten = content;
+
+    // Handle emoji band violation
+    if (violations.includes('EMOJI_BAND_VIOLATION')) {
+      const emojiCount = this.countEmojis(rewritten);
+      rewritten = this.enforceEmojiBand(rewritten, params.emojiFreq, emojiCount);
+    }
+
+    // Handle sentence length violation
+    if (violations.includes('SENTENCE_LENGTH_VIOLATION')) {
+      rewritten = this.enforceSentenceLengthBand(rewritten, params.msgLengthPref);
+    }
+
+    // Handle opener repetition
+    if (violations.includes('OPENER_REPETITION')) {
+      rewritten = this.rewriteOpener(rewritten, params.recentOpenerNorms);
+    }
+
+    // Handle message similarity
+    if (violations.includes('MESSAGE_SIMILARITY')) {
+      rewritten = this.rewriteForDifferentStructure(rewritten);
+    }
+
+    // Handle intimacy cap violation
+    if (violations.includes('INTIMACY_CAP_VIOLATION') && params.relationshipStage) {
+      rewritten = this.enforceIntimacyCap(rewritten, params.relationshipStage);
+    }
+
+    return rewritten;
+  }
+
+  /**
+   * Compute remaining violations after rewrite
+   */
+  private computeRemainingViolations(
+    content: string,
+    params: {
+      emojiFreq: EmojiFreq;
+      msgLengthPref: MsgLengthPref;
+      relationshipStage?: RelationshipStage;
+      recentOpenerNorms: string[];
+      recentContentNorms: string[];
+    },
+  ): ViolationType[] {
+    const violations: ViolationType[] = [];
+
+    // Check emoji band
+    const emojiCount = this.countEmojis(content);
+    const emojiBand = EMOJI_BANDS[params.emojiFreq];
+    if (emojiCount < emojiBand.min || emojiCount > emojiBand.max) {
+      violations.push('EMOJI_BAND_VIOLATION');
+    }
+
+    // Check sentence length band
+    if (this.checkSentenceLengthBand(content, params.msgLengthPref)) {
+      violations.push('SENTENCE_LENGTH_VIOLATION');
+    }
+
+    // Check opener repetition
+    const openerNorm = this.computeOpenerNorm(content);
+    if (params.recentOpenerNorms.includes(openerNorm)) {
+      violations.push('OPENER_REPETITION');
+    }
+
+    // Check message similarity
+    const normNoPunct = this.normalizeNoPunct(content);
+    for (const recentNorm of params.recentContentNorms) {
+      if (this.computeJaccardSimilarity(normNoPunct, recentNorm) >= SIMILARITY_THRESHOLD) {
+        violations.push('MESSAGE_SIMILARITY');
+        break;
+      }
+    }
+
+    // Check intimacy cap
+    if (params.relationshipStage && this.checkIntimacyCap(content, params.relationshipStage)) {
+      violations.push('INTIMACY_CAP_VIOLATION');
+    }
+
+    return violations;
+  }
+
+  /**
+   * Attempt LLM rewrite for violations that couldn't be fixed deterministically
+   * Per AI_PIPELINE.md §10: "one extra LLM call max"
+   */
+  private async attemptLlmRewrite(
+    originalContent: string,
+    violations: ViolationType[],
+    input: PostProcessorInput,
+  ): Promise<string | null> {
+    if (!this.apiKey) {
+      return null;
+    }
+
+    try {
+      const rewritePrompt = this.buildRewritePrompt(originalContent, violations, input);
+
+      const response = await fetch(this.apiUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${this.apiKey}`,
+        },
+        body: JSON.stringify({
+          model: this.model,
+          messages: [
+            { role: 'system', content: 'You are a rewriting assistant. Your job is to fix specific constraint violations in a message while preserving its meaning.' },
+            { role: 'user', content: rewritePrompt },
+          ],
+          max_tokens: 200,
+          temperature: 0.3, // Lower temperature for more controlled output
+        }),
+      });
+
+      if (!response.ok) {
+        this.logger.error(`LLM rewrite API error: ${response.status}`);
+        return null;
+      }
+
+      const data = await response.json() as { choices?: Array<{ message?: { content?: string } }> };
+      const rewrittenContent = data.choices?.[0]?.message?.content?.trim();
+
+      if (!rewrittenContent || rewrittenContent.length === 0) {
+        return null;
+      }
+
+      return rewrittenContent;
+    } catch (error) {
+      this.logger.error(`LLM rewrite failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      return null;
+    }
+  }
+
+  /**
+   * Build rewrite prompt for LLM
+   */
+  private buildRewritePrompt(
+    originalContent: string,
+    violations: ViolationType[],
+    input: PostProcessorInput,
+  ): string {
+    const violationDescriptions: string[] = [];
+
+    for (const violation of violations) {
+      switch (violation) {
+        case 'EMOJI_BAND_VIOLATION': {
+          const count = this.countEmojis(originalContent);
+          const band = EMOJI_BANDS[input.emojiFreq];
+          if (count > band.max) {
+            violationDescriptions.push(`- Emoji count is ${count}, must be at most ${band.max} (emoji_freq=${input.emojiFreq})`);
+          } else {
+            violationDescriptions.push(`- Emoji count is ${count}, must be at least ${band.min} (emoji_freq=${input.emojiFreq})`);
+          }
+          break;
+        }
+        case 'SENTENCE_LENGTH_VIOLATION': {
+          const metrics = this.computeSentenceMetrics(originalContent);
+          const band = SENTENCE_LENGTH_BANDS[input.msgLengthPref];
+          violationDescriptions.push(
+            `- Sentence count is ${metrics.sentenceCount}, should be ${band.sentenceCount.min}-${band.sentenceCount.max} ` +
+            `AND avg words/sentence is ${metrics.avgWordsPerSentence}, should be ${band.avgWords.min === 0 ? '0' : band.avgWords.min}-${band.avgWords.max === Infinity ? 'any' : band.avgWords.max} (msg_length_pref=${input.msgLengthPref})`,
+          );
+          break;
+        }
+        case 'OPENER_REPETITION':
+          violationDescriptions.push('- Opening phrase is too similar to recent messages. Use a different start.');
+          break;
+        case 'MESSAGE_SIMILARITY':
+          violationDescriptions.push('- Message structure is too similar to recent responses. Rewrite with different structure.');
+          break;
+        case 'INTIMACY_CAP_VIOLATION':
+          violationDescriptions.push('- Language is too intimate for current relationship stage. Use more appropriate phrasing.');
+          break;
+      }
+    }
+
+    return `The following response has violations that need fixing:
+
+ORIGINAL: "${originalContent}"
+
+VIOLATIONS:
+${violationDescriptions.join('\n')}
+
+Rewrite the response to:
+1. Fix all listed violations
+2. Preserve the core meaning
+3. Sound natural and conversational
+
+REWRITTEN:`;
+  }
+
+  /**
+   * Get safe fallback response
+   * Per AI_PIPELINE.md §10: "fall back to a safe, shorter response"
+   */
+  private getSafeFallback(pipeline?: string): string {
+    if (pipeline && SAFE_FALLBACKS[pipeline]) {
+      return SAFE_FALLBACKS[pipeline];
+    }
+    return SAFE_FALLBACKS.DEFAULT;
+  }
+
+  /**
+   * Enforce sentence length band by adjusting content
+   * Per AI_PIPELINE.md §10.5: "rewrite to match the nearest band while preserving content"
+   */
+  private enforceSentenceLengthBand(content: string, msgLengthPref: MsgLengthPref): string {
+    const { sentenceCount, avgWordsPerSentence } = this.computeSentenceMetrics(content);
+    const band = SENTENCE_LENGTH_BANDS[msgLengthPref];
+
+    // Split into sentences
+    const sentenceDelimiters = /(?<=[.!?…。？！])\s*/;
+    const sentences = content.split(sentenceDelimiters).filter(s => s.trim().length > 0);
+
+    // Too many sentences - truncate
+    if (sentenceCount > band.sentenceCount.max) {
+      const truncated = sentences.slice(0, band.sentenceCount.max).join(' ');
+      return truncated.trim();
+    }
+
+    // Too few sentences for medium/long - try to split
+    if (sentenceCount < band.sentenceCount.min) {
+      // For 'short' preference with min=1, a single sentence is always valid
+      if (msgLengthPref === 'short') {
+        return content;
+      }
+
+      // Can't easily add sentences deterministically, so return as-is
+      // LLM rewrite will handle this
+      return content;
+    }
+
+    // Average words too high - try shortening sentences
+    if (avgWordsPerSentence > band.avgWords.max) {
+      // Shorten each sentence to roughly the max average
+      const targetWords = band.avgWords.max;
+      const shortened = sentences.map(s => {
+        const words = s.trim().split(/\s+/);
+        if (words.length > targetWords * 1.2) {
+          // Keep first targetWords words and add ellipsis
+          return words.slice(0, targetWords).join(' ');
+        }
+        return s;
+      });
+      return shortened.join(' ').trim();
+    }
+
+    return content;
   }
 
   /**
