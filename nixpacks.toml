@@ -8,7 +8,7 @@ cmds = ["pnpm install"]
 [phases.build]
 cmds = [
     "pnpm --filter @chingoo/shared build",
-    "pnpm --filter @chingoo/api exec prisma generate",
+    "pnpm --filter @chingoo/shared exec prisma generate",
     "pnpm --filter @chingoo/api build"
 ]
 
