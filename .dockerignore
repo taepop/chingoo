@@ -1,0 +1,41 @@
+# Dependencies - will be installed fresh in Docker
+node_modules
+**/node_modules
+
+# Build outputs - will be built fresh in Docker
+dist
+**/dist
+.next
+**/.next
+
+# Development files
+.git
+.gitignore
+*.md
+.env
+.env.*
+!.env.example
+
+# IDE
+.vscode
+.idea
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Test files
+coverage
+**/*.spec.ts
+**/*.test.ts
+**/test
+
+# Mobile app (not needed for API deployment)
+apps/mobile
+
+# Logs
+*.log
+npm-debug.log*
+pnpm-debug.log*

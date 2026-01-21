@@ -3,14 +3,14 @@
 nixPkgs = ["nodejs_22", "pnpm"]
 
 [phases.install]
-cmds = ["pnpm install --frozen-lockfile"]
+cmds = ["pnpm install"]
 
 [phases.build]
 cmds = [
     "pnpm --filter @chingoo/shared build",
-    "pnpm --filter api build",
-    "pnpm --filter api exec prisma generate"
+    "pnpm --filter @chingoo/api exec prisma generate",
+    "pnpm --filter @chingoo/api build"
 ]
 
 [start]
-cmd = "pnpm --filter api start:prod"
+cmd = "pnpm --filter @chingoo/api start:prod"
