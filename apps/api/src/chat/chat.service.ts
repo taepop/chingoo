@@ -376,12 +376,21 @@ export class ChatService {
 
     // ============================================================================
     // CORRECTION TRIGGERS
+    // Must be specific phrases that indicate user is correcting the AI's memory
+    // NOT generic words like "wrong" which appear in normal conversation
     // ============================================================================
     const has_correction_trigger = [
-      "that's not true", 'thats not true', "don't remember that", 'dont remember that',
-      "don't bring this topic up again", 'dont bring this topic up again',
-      'not true', 'wrong', 'forget that', "that's wrong", 'thats wrong',
-      'actually no', "that's not right", 'thats not right',
+      // Direct memory correction phrases
+      "you're wrong", 'youre wrong',
+      "that's incorrect", 'thats incorrect',
+      // Memory deletion phrases
+      "don't remember that", 'dont remember that', 'forget that', 'forget about that',
+      "don't remember this", 'dont remember this',
+      // Topic suppression phrases
+      "don't bring this topic up", 'dont bring this topic up',
+      "don't mention that", 'dont mention that', "stop mentioning",
+      // Explicit corrections - must have "no" or "not" with AI reference
+      'no i', 'no my', "actually no", 'actually i', 'no that',
     ].some(p => textLower.includes(p));
 
     // ============================================================================
@@ -634,10 +643,10 @@ export class ChatService {
       });
 
       // Merge semantic results with keyword-based results, avoiding duplicates
-      // Per AI_PIPELINE.md §13: "Return small snippets only; never flood the prompt"
-      // Combined limit of 4 memories max (2 from keyword + 2 from semantic search)
+      // Per AI_PIPELINE.md §10.1: "do not mention >2 personal facts in one message"
+      // Limit to 2 memories max to avoid PERSONAL_FACT_VIOLATION
       const combinedIds = new Set([...surfacedMemoryIds, ...semanticMemoryIds]);
-      surfacedMemoryIds = Array.from(combinedIds).slice(0, 4);
+      surfacedMemoryIds = Array.from(combinedIds).slice(0, 2);
     }
 
     // Fetch conversation history for LLM context

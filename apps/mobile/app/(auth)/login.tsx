@@ -104,7 +104,7 @@ export default function LoginScreen() {
             <TextInput
               style={styles.input}
               placeholder="you@example.com"
-              placeholderTextColor="#9CA3AF"
+              placeholderTextColor="#787774"
               value={email}
               onChangeText={setEmail}
               autoCapitalize="none"
@@ -123,7 +123,7 @@ export default function LoginScreen() {
               <TextInput
                 style={styles.passwordInput}
                 placeholder="Enter your password"
-                placeholderTextColor="#9CA3AF"
+                placeholderTextColor="#787774"
                 value={password}
                 onChangeText={setPassword}
                 secureTextEntry={!showPassword}
@@ -176,15 +176,39 @@ export default function LoginScreen() {
   );
 }
 
+/**
+ * Notion-inspired Design Tokens
+ */
+const NotionTheme = {
+  colors: {
+    background: '#FFFFFF',
+    backgroundMuted: '#F7F7F5',
+    textPrimary: '#37352F',
+    textSecondary: '#787774',
+    border: '#E9E9E7',
+    accent: '#37352F',
+    link: '#2EAADC',
+    error: '#EB5757',
+  },
+  spacing: {
+    borderRadius: 4,
+    padding: 16,
+  },
+  typography: {
+    fontSizeHeading: 24,
+    fontSizeBody: 16,
+  },
+};
+
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#0F172A', // Dark slate background
+    backgroundColor: NotionTheme.colors.background,
   },
   scrollContent: {
     flexGrow: 1,
     justifyContent: 'center',
-    padding: 24,
+    padding: NotionTheme.spacing.padding,
   },
   header: {
     alignItems: 'center',
@@ -196,46 +220,43 @@ const styles = StyleSheet.create({
   },
   appName: {
     fontSize: 32,
-    fontWeight: '700',
-    color: '#F8FAFC',
+    fontWeight: '600',
+    color: NotionTheme.colors.textPrimary,
     letterSpacing: -0.5,
   },
   tagline: {
-    fontSize: 16,
-    color: '#94A3B8',
+    fontSize: NotionTheme.typography.fontSizeBody,
+    color: NotionTheme.colors.textSecondary,
     marginTop: 8,
   },
   form: {
-    backgroundColor: '#1E293B',
-    borderRadius: 24,
+    backgroundColor: NotionTheme.colors.background,
+    borderRadius: NotionTheme.spacing.borderRadius,
+    borderWidth: 1,
+    borderColor: NotionTheme.colors.border,
     padding: 24,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 8 },
-    shadowOpacity: 0.3,
-    shadowRadius: 16,
-    elevation: 8,
   },
   title: {
-    fontSize: 24,
-    fontWeight: '700',
-    color: '#F8FAFC',
+    fontSize: NotionTheme.typography.fontSizeHeading,
+    fontWeight: '600',
+    color: NotionTheme.colors.textPrimary,
     marginBottom: 4,
   },
   subtitle: {
-    fontSize: 16,
-    color: '#94A3B8',
+    fontSize: NotionTheme.typography.fontSizeBody,
+    color: NotionTheme.colors.textSecondary,
     marginBottom: 24,
   },
   errorContainer: {
-    backgroundColor: 'rgba(239, 68, 68, 0.15)',
+    backgroundColor: NotionTheme.colors.backgroundMuted,
     borderWidth: 1,
-    borderColor: 'rgba(239, 68, 68, 0.3)',
-    borderRadius: 12,
+    borderColor: NotionTheme.colors.error,
+    borderRadius: NotionTheme.spacing.borderRadius,
     padding: 12,
     marginBottom: 16,
   },
   errorText: {
-    color: '#F87171',
+    color: NotionTheme.colors.error,
     fontSize: 14,
     textAlign: 'center',
   },
@@ -244,67 +265,67 @@ const styles = StyleSheet.create({
   },
   label: {
     fontSize: 14,
-    fontWeight: '600',
-    color: '#CBD5E1',
+    fontWeight: '500',
+    color: NotionTheme.colors.textSecondary,
     marginBottom: 8,
   },
   input: {
-    backgroundColor: '#0F172A',
+    backgroundColor: NotionTheme.colors.background,
     borderWidth: 1,
-    borderColor: '#334155',
-    borderRadius: 12,
-    paddingHorizontal: 16,
-    paddingVertical: 14,
-    fontSize: 16,
-    color: '#F8FAFC',
+    borderColor: NotionTheme.colors.border,
+    borderRadius: NotionTheme.spacing.borderRadius,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    fontSize: NotionTheme.typography.fontSizeBody,
+    color: NotionTheme.colors.textPrimary,
   },
   passwordContainer: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#0F172A',
+    backgroundColor: NotionTheme.colors.background,
     borderWidth: 1,
-    borderColor: '#334155',
-    borderRadius: 12,
+    borderColor: NotionTheme.colors.border,
+    borderRadius: NotionTheme.spacing.borderRadius,
   },
   passwordInput: {
     flex: 1,
-    paddingHorizontal: 16,
-    paddingVertical: 14,
-    fontSize: 16,
-    color: '#F8FAFC',
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    fontSize: NotionTheme.typography.fontSizeBody,
+    color: NotionTheme.colors.textPrimary,
   },
   showPasswordButton: {
-    paddingHorizontal: 16,
-    paddingVertical: 14,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
   },
   showPasswordText: {
-    color: '#60A5FA',
+    color: NotionTheme.colors.textSecondary,
     fontSize: 14,
-    fontWeight: '600',
+    fontWeight: '500',
   },
   forgotPassword: {
     alignSelf: 'flex-end',
     marginBottom: 24,
   },
   forgotPasswordText: {
-    color: '#60A5FA',
+    color: NotionTheme.colors.link,
     fontSize: 14,
   },
   button: {
-    backgroundColor: '#3B82F6',
-    borderRadius: 12,
-    paddingVertical: 16,
+    backgroundColor: NotionTheme.colors.accent,
+    borderRadius: NotionTheme.spacing.borderRadius,
+    paddingVertical: 12,
     alignItems: 'center',
     justifyContent: 'center',
   },
   buttonDisabled: {
-    backgroundColor: '#1E40AF',
-    opacity: 0.7,
+    backgroundColor: NotionTheme.colors.textSecondary,
+    opacity: 0.6,
   },
   buttonText: {
-    color: '#fff',
-    fontSize: 16,
-    fontWeight: '700',
+    color: '#FFFFFF',
+    fontSize: NotionTheme.typography.fontSizeBody,
+    fontWeight: '500',
   },
   footer: {
     flexDirection: 'row',
@@ -312,12 +333,12 @@ const styles = StyleSheet.create({
     marginTop: 32,
   },
   footerText: {
-    color: '#94A3B8',
+    color: NotionTheme.colors.textSecondary,
     fontSize: 15,
   },
   linkText: {
-    color: '#60A5FA',
+    color: NotionTheme.colors.link,
     fontSize: 15,
-    fontWeight: '600',
+    fontWeight: '500',
   },
 });

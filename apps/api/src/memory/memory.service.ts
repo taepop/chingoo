@@ -473,14 +473,19 @@ export class MemoryService {
   };
 
   // Correction trigger patterns per AI_PIPELINE.md §12.4
+  // Must be specific phrases - NOT generic words like "wrong"
   private readonly correctionPatterns = {
     invalidate: [
-      "that's not true", "thats not true", "not true", "wrong",
-      "don't remember that", "dont remember that", "forget that",
+      // Direct corrections
+      "that's not true", "thats not true", "that's not right", "thats not right",
+      "that's wrong", "thats wrong", "you're wrong", "youre wrong",
+      "that's incorrect", "thats incorrect",
+      // Memory deletion
+      "don't remember that", "dont remember that", "forget that", "forget about that",
     ],
     suppress_topic: [
-      "don't bring this topic up again", "dont bring this topic up again",
-      "don't mention", "dont mention",
+      "don't bring this topic up", "dont bring this topic up",
+      "don't mention that", "dont mention that", "stop mentioning",
     ],
   };
 

@@ -49,6 +49,36 @@ interface Message {
   created_at: string;
 }
 
+/**
+ * Split text into sentences for staggered display.
+ * Handles common sentence endings (. ! ?) while preserving edge cases.
+ */
+function splitIntoSentences(text: string): string[] {
+  // Split on sentence-ending punctuation followed by space or end of string
+  // This regex captures sentences ending with . ! or ?
+  const sentences = text
+    .split(/(?<=[.!?])\s+/)
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+  
+  // If no sentences found (no punctuation), return the whole text as one
+  return sentences.length > 0 ? sentences : [text];
+}
+
+/**
+ * Returns a random delay between 2000ms and 3000ms
+ */
+function getRandomDelay(): number {
+  return 2000 + Math.random() * 1000;
+}
+
+/**
+ * Async sleep helper
+ */
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 interface LastSentPayload {
   message_id: string;
   conversation_id: string;
@@ -61,6 +91,7 @@ interface LastSentPayload {
 export default function ChatScreen() {
   const router = useRouter();
   const scrollViewRef = useRef<ScrollView>(null);
+  const isMountedRef = useRef(true);
 
   // State
   const [conversationId, setConversationId] = useState<string | null>(null);
@@ -69,10 +100,19 @@ export default function ChatScreen() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [initLoading, setInitLoading] = useState(true);
+  const [isTyping, setIsTyping] = useState(false); // Shows "typing" indicator
 
   // Idempotency testing state
   const [lastSent, setLastSent] = useState<LastSentPayload | null>(null);
   const [replayStatus, setReplayStatus] = useState<string | null>(null);
+
+  // Cleanup on unmount
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+    };
+  }, []);
 
   // Fetch conversation_id on mount via GET /user/me, then load chat history
   useEffect(() => {
@@ -167,17 +207,39 @@ export default function ChatScreen() {
       // Save for replay testing
       setLastSent({ ...request, response });
 
-      // Add assistant message to UI
-      const assistantMsg: Message = {
-        id: response.assistant_message.id,
-        role: 'assistant',
-        content: response.assistant_message.content,
-        created_at: response.assistant_message.created_at,
-      };
-      setMessages((prev) => [...prev, assistantMsg]);
-
-      // Scroll to bottom
-      setTimeout(() => scrollViewRef.current?.scrollToEnd({ animated: true }), 100);
+      // Split assistant response into sentences for staggered display
+      const sentences = splitIntoSentences(response.assistant_message.content);
+      
+      // Show typing indicator while displaying sentences
+      setIsTyping(true);
+      
+      // Add each sentence as a separate bubble with delay
+      for (let i = 0; i < sentences.length; i++) {
+        // Wait before showing each sentence (except the first one)
+        if (i > 0) {
+          await sleep(getRandomDelay());
+        }
+        
+        // Check if component is still mounted
+        if (!isMountedRef.current) break;
+        
+        const sentenceMsg: Message = {
+          id: `${response.assistant_message.id}-${i}`,
+          role: 'assistant',
+          content: sentences[i],
+          created_at: response.assistant_message.created_at,
+        };
+        
+        setMessages((prev) => [...prev, sentenceMsg]);
+        
+        // Scroll to bottom after each sentence
+        setTimeout(() => scrollViewRef.current?.scrollToEnd({ animated: true }), 100);
+      }
+      
+      // Hide typing indicator
+      if (isMountedRef.current) {
+        setIsTyping(false);
+      }
     } catch (err) {
       if (err instanceof ApiError) {
         if (err.statusCode === 409) {
@@ -291,7 +353,6 @@ export default function ChatScreen() {
       {/* Header */}
       <View style={styles.header}>
         <Text style={styles.headerTitle}>Chat</Text>
-        <Text style={styles.headerSubtitle}>conv: {conversationId.slice(0, 8)}...</Text>
       </View>
 
       {/* Messages */}
@@ -321,45 +382,19 @@ export default function ChatScreen() {
             </Text>
           </View>
         ))}
+        {/* Typing indicator */}
+        {isTyping && (
+          <View style={[styles.messageBubble, styles.assistantBubble, styles.typingBubble]}>
+            <Text style={styles.typingText}>...</Text>
+          </View>
+        )}
       </ScrollView>
-
-      {/* Debug: surfaced_memory_ids display */}
-      {lastSent?.response && (
-        <View style={styles.debugContainer}>
-          <Text style={styles.debugText}>
-            surfaced_memory_ids:{' '}
-            {(lastSent.response as any).surfaced_memory_ids
-              ? JSON.stringify((lastSent.response as any).surfaced_memory_ids)
-              : '(not present in response)'}
-          </Text>
-        </View>
-      )}
 
       {/* Error display */}
       {error && (
         <View style={styles.errorContainer}>
           <Text style={styles.errorText}>{error}</Text>
         </View>
-      )}
-
-      {/* Replay status */}
-      {replayStatus && (
-        <View style={styles.replayContainer}>
-          <Text style={styles.replayText}>{replayStatus}</Text>
-        </View>
-      )}
-
-      {/* Resend button for idempotency testing */}
-      {lastSent && (
-        <TouchableOpacity
-          style={styles.resendButton}
-          onPress={handleResend}
-          disabled={loading}
-        >
-          <Text style={styles.resendButtonText}>
-            Resend last message_id ({lastSent.message_id.slice(0, 8)}...)
-          </Text>
-        </TouchableOpacity>
       )}
 
       {/* Input */}
@@ -385,14 +420,39 @@ export default function ChatScreen() {
   );
 }
 
+/**
+ * Notion-inspired Design Tokens
+ */
+const NotionTheme = {
+  colors: {
+    background: '#FFFFFF',
+    backgroundMuted: '#F7F7F5',
+    textPrimary: '#37352F',
+    textSecondary: '#787774',
+    border: '#E9E9E7',
+    accent: '#37352F',
+    link: '#2EAADC',
+    error: '#EB5757',
+    success: '#6FCF97',
+  },
+  spacing: {
+    borderRadius: 4,
+    padding: 16,
+  },
+  typography: {
+    fontSizeHeading: 24,
+    fontSizeBody: 16,
+  },
+};
+
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#fff',
+    backgroundColor: NotionTheme.colors.background,
   },
   centerContainer: {
     flex: 1,
-    backgroundColor: '#fff',
+    backgroundColor: NotionTheme.colors.background,
     alignItems: 'center',
     justifyContent: 'center',
     padding: 20,
@@ -400,155 +460,178 @@ const styles = StyleSheet.create({
   header: {
     paddingTop: 50,
     paddingBottom: 12,
-    paddingHorizontal: 16,
+    paddingHorizontal: NotionTheme.spacing.padding,
     borderBottomWidth: 1,
-    borderBottomColor: '#eee',
+    borderBottomColor: NotionTheme.colors.border,
+    backgroundColor: NotionTheme.colors.background,
   },
   headerTitle: {
     fontSize: 20,
-    fontWeight: 'bold',
+    fontWeight: '600',
+    color: NotionTheme.colors.textPrimary,
   },
   headerSubtitle: {
     fontSize: 12,
-    color: '#999',
+    color: NotionTheme.colors.textSecondary,
     marginTop: 2,
   },
   messagesContainer: {
     flex: 1,
+    backgroundColor: NotionTheme.colors.backgroundMuted,
   },
   messagesContent: {
-    padding: 16,
+    padding: NotionTheme.spacing.padding,
     paddingBottom: 8,
   },
   emptyText: {
     textAlign: 'center',
-    color: '#999',
+    color: NotionTheme.colors.textSecondary,
     marginTop: 40,
+    fontSize: NotionTheme.typography.fontSizeBody,
   },
   messageBubble: {
     maxWidth: '80%',
     padding: 12,
-    borderRadius: 16,
+    borderRadius: NotionTheme.spacing.borderRadius,
     marginBottom: 8,
   },
   userBubble: {
-    backgroundColor: '#007AFF',
+    backgroundColor: NotionTheme.colors.accent,
     alignSelf: 'flex-end',
-    borderBottomRightRadius: 4,
   },
   assistantBubble: {
-    backgroundColor: '#F0F0F0',
+    backgroundColor: NotionTheme.colors.background,
     alignSelf: 'flex-start',
-    borderBottomLeftRadius: 4,
+    borderWidth: 1,
+    borderColor: NotionTheme.colors.border,
   },
   messageText: {
-    fontSize: 16,
+    fontSize: NotionTheme.typography.fontSizeBody,
     lineHeight: 22,
   },
   userText: {
-    color: '#fff',
+    color: '#FFFFFF',
   },
   assistantText: {
-    color: '#333',
+    color: NotionTheme.colors.textPrimary,
+  },
+  typingBubble: {
+    paddingHorizontal: 16,
+  },
+  typingText: {
+    color: NotionTheme.colors.textSecondary,
+    fontSize: 20,
+    letterSpacing: 2,
   },
   debugContainer: {
-    backgroundColor: '#F5F5F5',
+    backgroundColor: NotionTheme.colors.backgroundMuted,
     padding: 8,
-    marginHorizontal: 16,
-    borderRadius: 4,
+    marginHorizontal: NotionTheme.spacing.padding,
+    borderRadius: NotionTheme.spacing.borderRadius,
+    borderWidth: 1,
+    borderColor: NotionTheme.colors.border,
   },
   debugText: {
     fontSize: 10,
-    color: '#666',
+    color: NotionTheme.colors.textSecondary,
     fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
   },
   errorContainer: {
-    backgroundColor: '#FFEBEE',
+    backgroundColor: NotionTheme.colors.backgroundMuted,
     padding: 8,
-    marginHorizontal: 16,
-    borderRadius: 4,
+    marginHorizontal: NotionTheme.spacing.padding,
+    borderRadius: NotionTheme.spacing.borderRadius,
+    borderWidth: 1,
+    borderColor: NotionTheme.colors.error,
   },
   errorText: {
-    color: '#C62828',
+    color: NotionTheme.colors.error,
     fontSize: 14,
   },
   errorTitle: {
     fontSize: 20,
-    fontWeight: 'bold',
-    color: '#C62828',
+    fontWeight: '600',
+    color: NotionTheme.colors.error,
     marginBottom: 8,
   },
   replayContainer: {
-    backgroundColor: '#E8F5E9',
+    backgroundColor: NotionTheme.colors.backgroundMuted,
     padding: 8,
-    marginHorizontal: 16,
-    borderRadius: 4,
+    marginHorizontal: NotionTheme.spacing.padding,
+    borderRadius: NotionTheme.spacing.borderRadius,
     marginTop: 4,
+    borderWidth: 1,
+    borderColor: NotionTheme.colors.success,
   },
   replayText: {
-    color: '#2E7D32',
+    color: NotionTheme.colors.success,
     fontSize: 12,
   },
   resendButton: {
-    backgroundColor: '#FFF3E0',
+    backgroundColor: NotionTheme.colors.backgroundMuted,
     padding: 8,
-    marginHorizontal: 16,
+    marginHorizontal: NotionTheme.spacing.padding,
     marginTop: 8,
-    borderRadius: 4,
+    borderRadius: NotionTheme.spacing.borderRadius,
     alignItems: 'center',
+    borderWidth: 1,
+    borderColor: NotionTheme.colors.border,
   },
   resendButtonText: {
-    color: '#E65100',
+    color: NotionTheme.colors.textSecondary,
     fontSize: 12,
   },
   retryButton: {
-    backgroundColor: '#007AFF',
+    backgroundColor: NotionTheme.colors.accent,
     paddingHorizontal: 20,
     paddingVertical: 10,
-    borderRadius: 8,
+    borderRadius: NotionTheme.spacing.borderRadius,
     marginTop: 16,
   },
   retryButtonText: {
-    color: '#fff',
+    color: '#FFFFFF',
     fontSize: 14,
-    fontWeight: '600',
+    fontWeight: '500',
   },
   inputContainer: {
     flexDirection: 'row',
     padding: 12,
     borderTopWidth: 1,
-    borderTopColor: '#eee',
+    borderTopColor: NotionTheme.colors.border,
     alignItems: 'flex-end',
+    backgroundColor: NotionTheme.colors.background,
   },
   input: {
     flex: 1,
     minHeight: 40,
     maxHeight: 100,
     borderWidth: 1,
-    borderColor: '#ddd',
-    borderRadius: 20,
-    paddingHorizontal: 16,
+    borderColor: NotionTheme.colors.border,
+    borderRadius: NotionTheme.spacing.borderRadius,
+    paddingHorizontal: 12,
     paddingVertical: 10,
-    fontSize: 16,
+    fontSize: NotionTheme.typography.fontSizeBody,
     marginRight: 8,
+    color: NotionTheme.colors.textPrimary,
+    backgroundColor: NotionTheme.colors.background,
   },
   sendButton: {
-    backgroundColor: '#007AFF',
+    backgroundColor: NotionTheme.colors.accent,
     width: 60,
     height: 40,
-    borderRadius: 20,
+    borderRadius: NotionTheme.spacing.borderRadius,
     alignItems: 'center',
     justifyContent: 'center',
   },
   sendButtonDisabled: {
-    backgroundColor: '#ccc',
+    backgroundColor: NotionTheme.colors.border,
   },
   sendButtonText: {
-    color: '#fff',
-    fontWeight: '600',
+    color: '#FFFFFF',
+    fontWeight: '500',
   },
   loadingText: {
-    fontSize: 16,
-    color: '#666',
+    fontSize: NotionTheme.typography.fontSizeBody,
+    color: NotionTheme.colors.textSecondary,
   },
 });

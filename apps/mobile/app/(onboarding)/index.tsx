@@ -276,10 +276,35 @@ export default function OnboardingScreen() {
   );
 }
 
+/**
+ * Notion-inspired Design Tokens
+ */
+const NotionTheme = {
+  colors: {
+    background: '#FFFFFF',
+    backgroundMuted: '#F7F7F5',
+    textPrimary: '#37352F',
+    textSecondary: '#787774',
+    border: '#E9E9E7',
+    accent: '#37352F',
+    link: '#2EAADC',
+    error: '#EB5757',
+    warning: '#FFCC00',
+  },
+  spacing: {
+    borderRadius: 4,
+    padding: 16,
+  },
+  typography: {
+    fontSizeHeading: 24,
+    fontSizeBody: 16,
+  },
+};
+
 const styles = StyleSheet.create({
   scrollView: {
     flex: 1,
-    backgroundColor: '#fff',
+    backgroundColor: NotionTheme.colors.background,
   },
   container: {
     padding: 20,
@@ -288,27 +313,31 @@ const styles = StyleSheet.create({
   },
   title: {
     fontSize: 28,
-    fontWeight: 'bold',
+    fontWeight: '600',
+    color: NotionTheme.colors.textPrimary,
     marginBottom: 8,
   },
   subtitle: {
-    fontSize: 16,
-    color: '#666',
+    fontSize: NotionTheme.typography.fontSizeBody,
+    color: NotionTheme.colors.textSecondary,
     marginBottom: 24,
   },
   label: {
     fontSize: 14,
-    fontWeight: '600',
+    fontWeight: '500',
+    color: NotionTheme.colors.textSecondary,
     marginTop: 16,
     marginBottom: 8,
   },
   input: {
-    height: 50,
+    height: 44,
     borderWidth: 1,
-    borderColor: '#ddd',
-    borderRadius: 8,
-    paddingHorizontal: 16,
-    fontSize: 16,
+    borderColor: NotionTheme.colors.border,
+    borderRadius: NotionTheme.spacing.borderRadius,
+    paddingHorizontal: 12,
+    fontSize: NotionTheme.typography.fontSizeBody,
+    color: NotionTheme.colors.textPrimary,
+    backgroundColor: NotionTheme.colors.background,
   },
   optionRow: {
     flexDirection: 'row',
@@ -316,23 +345,24 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   optionButton: {
-    paddingHorizontal: 16,
-    paddingVertical: 10,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
     borderWidth: 1,
-    borderColor: '#ddd',
-    borderRadius: 20,
+    borderColor: NotionTheme.colors.border,
+    borderRadius: NotionTheme.spacing.borderRadius,
     marginBottom: 8,
+    backgroundColor: NotionTheme.colors.background,
   },
   optionButtonSelected: {
-    backgroundColor: '#007AFF',
-    borderColor: '#007AFF',
+    backgroundColor: NotionTheme.colors.accent,
+    borderColor: NotionTheme.colors.accent,
   },
   optionText: {
     fontSize: 14,
-    color: '#333',
+    color: NotionTheme.colors.textPrimary,
   },
   optionTextSelected: {
-    color: '#fff',
+    color: '#FFFFFF',
   },
   switchRow: {
     flexDirection: 'row',
@@ -349,49 +379,53 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingVertical: 8,
     borderWidth: 1,
-    borderColor: '#ddd',
-    borderRadius: 16,
+    borderColor: NotionTheme.colors.border,
+    borderRadius: NotionTheme.spacing.borderRadius,
     marginBottom: 8,
+    backgroundColor: NotionTheme.colors.background,
   },
   topicButtonSelected: {
-    backgroundColor: '#FF3B30',
-    borderColor: '#FF3B30',
+    backgroundColor: NotionTheme.colors.error,
+    borderColor: NotionTheme.colors.error,
   },
   topicText: {
     fontSize: 12,
-    color: '#333',
+    color: NotionTheme.colors.textPrimary,
   },
   topicTextSelected: {
-    color: '#fff',
+    color: '#FFFFFF',
   },
   submitButton: {
-    height: 50,
-    backgroundColor: '#007AFF',
-    borderRadius: 8,
+    height: 44,
+    backgroundColor: NotionTheme.colors.accent,
+    borderRadius: NotionTheme.spacing.borderRadius,
     alignItems: 'center',
     justifyContent: 'center',
     marginTop: 32,
   },
   submitButtonDisabled: {
-    backgroundColor: '#ccc',
+    backgroundColor: NotionTheme.colors.textSecondary,
+    opacity: 0.6,
   },
   submitButtonText: {
-    color: '#fff',
-    fontSize: 16,
-    fontWeight: '600',
+    color: '#FFFFFF',
+    fontSize: NotionTheme.typography.fontSizeBody,
+    fontWeight: '500',
   },
   errorContainer: {
-    backgroundColor: '#FFEBEE',
+    backgroundColor: NotionTheme.colors.backgroundMuted,
     padding: 12,
-    borderRadius: 8,
+    borderRadius: NotionTheme.spacing.borderRadius,
     marginBottom: 16,
+    borderWidth: 1,
+    borderColor: NotionTheme.colors.error,
   },
   errorText: {
-    color: '#C62828',
+    color: NotionTheme.colors.error,
     fontSize: 14,
   },
   constraintText: {
-    color: '#C62828',
+    color: NotionTheme.colors.error,
     fontSize: 12,
     marginTop: 4,
   },

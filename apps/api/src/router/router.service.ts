@@ -347,10 +347,17 @@ export class RouterService {
    */
   private detectCorrectionTrigger(text: string): boolean {
     const patterns = [
-      "that's not true", "thats not true",
-      "don't remember that", "dont remember that",
-      "don't bring this topic up again", "dont bring this topic up again",
-      "not true", "wrong"
+      // Direct memory correction phrases
+      "that's not true", "thats not true", "that's not right", "thats not right",
+      "that's wrong", "thats wrong", "you're wrong", "youre wrong",
+      "that's incorrect", "thats incorrect",
+      // Memory deletion phrases
+      "don't remember that", "dont remember that", "forget that", "forget about that",
+      // Topic suppression phrases
+      "don't bring this topic up", "dont bring this topic up",
+      "don't mention that", "dont mention that",
+      // Explicit corrections
+      "actually no", "no that"
     ];
     return patterns.some(p => text.includes(p));
   }
