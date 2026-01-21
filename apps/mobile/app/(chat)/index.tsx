@@ -50,19 +50,63 @@ interface Message {
 }
 
 /**
+ * Count words in a string
+ */
+function countWords(text: string): number {
+  return text.trim().split(/\s+/).filter((w) => w.length > 0).length;
+}
+
+/**
  * Split text into sentences for staggered display.
  * Handles common sentence endings (. ! ?) while preserving edge cases.
+ * Merges short sentences (2 words or less) with the next sentence for natural feel.
  */
 function splitIntoSentences(text: string): string[] {
   // Split on sentence-ending punctuation followed by space or end of string
   // This regex captures sentences ending with . ! or ?
-  const sentences = text
+  const rawSentences = text
     .split(/(?<=[.!?])\s+/)
     .map((s) => s.trim())
     .filter((s) => s.length > 0);
   
   // If no sentences found (no punctuation), return the whole text as one
-  return sentences.length > 0 ? sentences : [text];
+  if (rawSentences.length === 0) return [text];
+  
+  // Merge short sentences (2 words or less) with the next sentence
+  const mergedSentences: string[] = [];
+  let buffer = '';
+  
+  for (let i = 0; i < rawSentences.length; i++) {
+    const sentence = rawSentences[i];
+    const wordCount = countWords(sentence);
+    
+    if (wordCount <= 2) {
+      // Short sentence - add to buffer to merge with next
+      buffer = buffer ? `${buffer} ${sentence}` : sentence;
+    } else {
+      // Long enough sentence (3+ words)
+      if (buffer) {
+        // Merge buffer with this sentence
+        mergedSentences.push(`${buffer} ${sentence}`);
+        buffer = '';
+      } else {
+        mergedSentences.push(sentence);
+      }
+    }
+  }
+  
+  // Handle remaining buffer (if last sentences were all short)
+  if (buffer) {
+    if (mergedSentences.length > 0) {
+      // Append to last sentence
+      mergedSentences[mergedSentences.length - 1] += ` ${buffer}`;
+    } else {
+      // All sentences were short, just return as one
+      mergedSentences.push(buffer);
+    }
+  }
+  
+  return mergedSentences.length > 0 ? mergedSentences : [text];
 }
 
 /**
@@ -145,7 +189,28 @@ export default function ChatScreen() {
           );
 
           if (historyResponse.messages && historyResponse.messages.length > 0) {
-            setMessages(historyResponse.messages);
+            // Transform history: split assistant messages into sentence bubbles
+            const transformedMessages: Message[] = [];
+            
+            for (const msg of historyResponse.messages) {
+              if (msg.role === 'assistant') {
+                // Split assistant messages into sentences (same as live display)
+                const sentences = splitIntoSentences(msg.content);
+                sentences.forEach((sentence, idx) => {
+                  transformedMessages.push({
+                    id: `${msg.id}-${idx}`,
+                    role: 'assistant',
+                    content: sentence,
+                    created_at: msg.created_at,
+                  });
+                });
+              } else {
+                // Keep user messages as-is
+                transformedMessages.push(msg);
+              }
+            }
+            
+            setMessages(transformedMessages);
             // Scroll to bottom after loading history
             setTimeout(() => scrollViewRef.current?.scrollToEnd({ animated: false }), 100);
           }
