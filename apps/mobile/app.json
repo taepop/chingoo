@@ -17,16 +17,23 @@
     },
     "android": {
       "adaptiveIcon": {
+        "foregroundImage": "./assets/splash.png",
         "backgroundColor": "#ffffff"
       },
       "package": "com.chingoo.app"
     },
     "scheme": "chingoo",
+    "icon": "./assets/splash.png",
     "plugins": [
       "expo-router",
       "expo-asset",
-      "expo-font",
-      "expo-dev-client"
-    ]
+      "expo-font"
+    ],
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "0b58a81b-e4a1-415a-afde-091308be78cf"
+      }
+    }
   }
 }
