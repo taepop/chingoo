@@ -29,15 +29,7 @@
     "plugins": [
       "expo-router",
       "expo-asset",
-      "expo-font",
-      [
-        "expo-splash-screen",
-        {
-          "image": "./assets/splash.png",
-          "backgroundColor": "#ffffff",
-          "resizeMode": "contain"
-        }
-      ]
+      "expo-font"
     ],
     "extra": {
       "router": {},
