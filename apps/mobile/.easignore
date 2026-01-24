@@ -1,0 +1,32 @@
+# Dependencies - EAS will install fresh
+node_modules/
+.pnpm-store/
+
+# Other apps in monorepo (not needed for mobile build)
+apps/api/
+
+# Build artifacts (EXCEPT shared package dist which is needed)
+apps/mobile/dist/
+apps/api/dist/
+*.tsbuildinfo
+
+# Development files
+.env.local
+.env.development
+*.log
+
+# IDE
+.vscode/
+.idea/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Test files
+__tests__/
+*.test.ts
+*.test.tsx
+*.spec.ts
+*.spec.tsx
+coverage/
