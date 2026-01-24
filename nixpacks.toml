@@ -9,8 +9,9 @@ cmds = ["pnpm install"]
 cmds = [
     "pnpm --filter @chingoo/shared build",
     "pnpm --filter @chingoo/shared exec prisma generate",
-    "pnpm --filter @chingoo/api build"
+    "pnpm --filter @chingoo/api build",
+    "chmod +x scripts/start-prod.sh"
 ]
 
 [start]
-cmd = "pnpm --filter @chingoo/shared exec prisma db push --accept-data-loss && pnpm --filter @chingoo/api start:prod"
+cmd = "bash scripts/start-prod.sh"
