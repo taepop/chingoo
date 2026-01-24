@@ -1,0 +1,39 @@
+{
+  "cli": {
+    "version": ">= 3.0.0",
+    "appVersionSource": "local"
+  },
+  "build": {
+    "base": {
+      "node": "22.12.0",
+      "pnpm": "9.15.0"
+    },
+    "development": {
+      "extends": "base",
+      "developmentClient": true,
+      "distribution": "internal"
+    },
+    "preview": {
+      "extends": "base",
+      "distribution": "internal",
+      "android": {
+        "buildType": "apk"
+      },
+      "env": {
+        "EXPO_PUBLIC_API_URL": "https://chingoo-production.up.railway.app"
+      }
+    },
+    "production": {
+      "extends": "base",
+      "android": {
+        "buildType": "apk"
+      },
+      "env": {
+        "EXPO_PUBLIC_API_URL": "https://chingoo-production.up.railway.app"
+      }
+    }
+  },
+  "submit": {
+    "production": {}
+  }
+}

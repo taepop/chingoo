@@ -1,0 +1,12 @@
+{
+  "expo": {
+    "extra": {
+      "eas": {
+        "projectId": "98d6ae4b-4971-4b43-b490-18823f2c25b2"
+      }
+    },
+    "android": {
+      "package": "com.taepop.chingoomonorepo"
+    }
+  }
+}

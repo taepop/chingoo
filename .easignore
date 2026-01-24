@@ -1,0 +1,46 @@
+# Node modules - will be installed fresh
+node_modules/
+**/node_modules/
+
+# API app (not needed for mobile build)
+apps/api/
+
+# Build outputs (but NOT shared package dist - it's needed!)
+apps/mobile/dist/
+*.tsbuildinfo
+
+# Development and config files
+.env
+.env.*
+!.env.example
+.git/
+.gitignore
+.vscode/
+.idea/
+
+# Documentation
+docs/
+*.md
+!README.md
+
+# Test files
+**/*.spec.ts
+**/*.test.ts
+**/test/
+coverage/
+
+# Docker files
+docker-compose.yml
+Dockerfile
+.dockerignore
+
+# Railway/Nixpacks config
+railway.toml
+nixpacks.toml
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
