@@ -9,9 +9,8 @@ cmds = ["pnpm install"]
 cmds = [
     "pnpm --filter @chingoo/shared build",
     "pnpm --filter @chingoo/shared exec prisma generate",
-    "pnpm --filter @chingoo/shared exec prisma migrate deploy",
     "pnpm --filter @chingoo/api build"
 ]
 
 [start]
-cmd = "pnpm --filter @chingoo/api start:prod"
+cmd = "pnpm --filter @chingoo/shared exec prisma migrate deploy && pnpm --filter @chingoo/api start:prod"
