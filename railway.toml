@@ -1,8 +1,6 @@
 [build]
 builder = "nixpacks"
-
-[build.nixpacks]
-pkgs = ["pnpm"]
+nixpacksConfigPath = "nixpacks.toml"
 
 [deploy]
-startCommand = "pnpm --filter api start:prod"
+startCommand = "cd /app/packages/shared && npx prisma db push --accept-data-loss && cd /app/apps/api && node dist/main.js"
