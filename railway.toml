@@ -3,4 +3,4 @@ builder = "nixpacks"
 nixpacksConfigPath = "nixpacks.toml"
 
 [deploy]
-startCommand = "cd /app/packages/shared && npx prisma db push --accept-data-loss && cd /app/apps/api && node dist/main.js"
+startCommand = "cd /app/packages/shared && npx prisma db push --accept-data-loss && npx prisma db seed && cd /app/apps/api && node dist/main.js"
