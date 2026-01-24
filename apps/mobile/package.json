@@ -10,6 +10,11 @@
     "ios": "expo run:ios",
     "web": "expo start --web"
   },
+  "expo": {
+    "install": {
+      "exclude": ["@react-navigation/native"]
+    }
+  },
   "dependencies": {
     "@babel/runtime": "^7.28.4",
     "@chingoo/shared": "workspace:*",
